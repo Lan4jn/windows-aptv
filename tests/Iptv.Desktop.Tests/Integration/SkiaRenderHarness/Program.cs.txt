@@ -1,0 +1,138 @@
+using Avalonia;
+using Avalonia.Controls;
+using Avalonia.Headless;
+using Avalonia.Themes.Fluent;
+using Avalonia.Threading;
+using Iptv.Core.Models;
+using Iptv.Desktop;
+using Iptv.Desktop.Tests;
+using Iptv.Desktop.ViewModels;
+using SkiaSharp;
+
+public sealed class RenderApplication : Application
+{
+    public override void Initialize() => Styles.Add(new FluentTheme());
+}
+
+public static class Program
+{
+    [STAThread]
+    public static int Main(string[] args)
+    {
+        try
+        {
+            var output = Path.GetFullPath(args.FirstOrDefault(a => !a.StartsWith("--")) ?? "render-output");
+            Directory.CreateDirectory(output);
+            Console.WriteLine($"PLATFORM={System.Runtime.InteropServices.RuntimeInformation.OSDescription} ARCH={System.Runtime.InteropServices.RuntimeInformation.ProcessArchitecture} SESSION={(OperatingSystem.IsWindows() ? System.Diagnostics.Process.GetCurrentProcess().SessionId.ToString() : "n/a")}");
+            if (args.Contains("--s1-probe")) { S1AcceptanceProbe.Run(output).GetAwaiter().GetResult(); return 0; }
+            var productApp = args.Contains("--product-app");
+            var builder = productApp ? AppBuilder.Configure<Iptv.Desktop.App>() : AppBuilder.Configure<RenderApplication>();
+            builder.UseSkia().UseHeadless(new AvaloniaHeadlessPlatformOptions { UseHeadlessDrawing = false })
+                .SetupWithoutStarting();
+            Console.WriteLine("APPLICATION=" + Application.Current!.GetType().FullName);
+            var themeIndex = Array.IndexOf(args, "--theme");
+            var dark = themeIndex >= 0 && themeIndex + 1 < args.Length && args[themeIndex + 1] == "dark";
+            if (themeIndex >= 0 || !productApp)
+                Application.Current!.RequestedThemeVariant = dark ? Avalonia.Styling.ThemeVariant.Dark : Avalonia.Styling.ThemeVariant.Light;
+            if (productApp && themeIndex < 0 && Application.Current!.RequestedThemeVariant != Avalonia.Styling.ThemeVariant.Dark)
+                throw new Exception("PRODUCT_THEME_REGRESSION: product App did not request Dark.");
+            Console.WriteLine("REQUESTED_THEME=" + Application.Current!.RequestedThemeVariant);
+            if (args.Contains("--local-playback")) return LocalPlaybackRunner.Run(output);
+            if (args.Contains("--proxy-ui")) return ProxyUiRunner.Run(output,args.Contains("--break-proxy-content"));
+            if (args.Contains("--source-proxy")) return SourceProxyRunner.Run(output, args.Contains("--break-source-content"));
+            if (args.Contains("--continuation")) return ContinuationRunner.Run(output, args.Contains("--break-content"));
+            if (args.Contains("--matrix")) return MatrixRunner.Run(output, args.Contains("--break-content"));
+            var source = new SourceConfig("synthetic", "Synthetic channels", SourceKind.M3u,
+                "https://fixture.invalid/list.m3u");
+            var channels = new[]
+            {
+                new Channel("news", source.Id, "Synthetic News", "https://fixture.invalid/live/FAKEUSER/FAKEPASS/1.ts?custom=FAKETOKEN", group: "News", tvgId: "news"),
+                new Channel("culture", source.Id, "Synthetic Culture", "https://fixture.invalid/culture.ts", group: "Culture"),
+                new Channel("sport", source.Id, "Synthetic Sport", "https://fixture.invalid/sport.ts", group: "Sport")
+            };
+            var start = new DateTimeOffset(2026, 10, 14, 10, 0, 0, TimeSpan.Zero);
+            var epg = new FakeEpgService(new EpgProgramme("news", "Morning bulletin", start, start.AddHours(1)),
+                new EpgProgramme("news", "World report", start.AddHours(1), start.AddHours(2)));
+            var player = new FakePlayer();
+            var vm = new MainWindowViewModel(new FakePlaylistService(channels),
+                new FakeLibraryService(new[] { source }, channels), epg, player);
+            var window = new MainWindow { DataContext = vm, Width = 1280, Height = 800 };
+            try
+            {
+                window.Show();
+                Complete(window.InitializationTask);
+                if (args.Contains("--break-render"))
+                {
+                    window.Content = new Border { Background = Avalonia.Media.Brushes.Black };
+                    Capture(window, output, "broken-monochrome");
+                    throw new Exception("Broken rendering unexpectedly passed the non-vacuity assertion.");
+                }
+                Capture(window, output, "channels");
+                vm.ChannelsVm.SelectedChannel = channels[0];
+                Dispatcher.UIThread.RunJobs();
+                if (vm.ChannelsVm.CurrentProgrammeTitle != "Morning bulletin") throw new Exception("EPG fixture not bound.");
+                Capture(window, output, "epg");
+                vm.NavigateToConfigsCommand.Execute(null);
+                Capture(window, output, "configs");
+                vm.NavigateToSearchCommand.Execute(null);
+                vm.SearchVm.SearchText = "Synthetic";
+                Complete(vm.SearchVm.PerformSearchAsync());
+                if (vm.SearchVm.SearchResults.Count != 3) throw new Exception("Search fixture not populated.");
+                Capture(window, output, "search");
+                vm.NavigateToChannelsCommand.Execute(null);
+                Complete(vm.ChannelsVm.PlayChannelCommand.ExecuteAsync(channels[0]));
+                if (!vm.PlayerVm.IsPlaying || vm.PlayerVm.ChannelTitle != channels[0].Name) throw new Exception("Player fixture not bound.");
+                Capture(window, output, "player-controls");
+            }
+            finally { window.Close(); Dispatcher.UIThread.RunJobs(); }
+            Console.WriteLine("SKIA_RENDER_ACCEPTANCE=PASS (fake media; not native video output)");
+            return 0;
+        }
+        catch (Exception error)
+        {
+            Console.Error.WriteLine("SKIA_RENDER_ACCEPTANCE=FAIL " + error);
+            return 1;
+        }
+    }
+
+    internal static void Complete(Task task)
+    {
+        var deadline = DateTime.UtcNow.AddSeconds(10);
+        while (!task.IsCompleted && DateTime.UtcNow < deadline)
+        {
+            Dispatcher.UIThread.RunJobs();
+            Thread.Sleep(5);
+        }
+        if (!task.IsCompleted) throw new TimeoutException("Fixture task did not complete.");
+        task.GetAwaiter().GetResult();
+    }
+
+    internal static void Capture(MainWindow window, string output, string name, int width = 1280, int height = 800)
+    {
+        window.UpdateLayout();
+        Dispatcher.UIThread.RunJobs();
+        AvaloniaHeadlessPlatform.ForceRenderTimerTick(3);
+        Dispatcher.UIThread.RunJobs();
+        using var frame = window.CaptureRenderedFrame() ?? throw new Exception("Skia returned no rendered frame.");
+        var path = Path.Combine(output, name + ".png");
+        frame.Save(path);
+        using var decoded = SKBitmap.Decode(path) ?? throw new Exception("Rendered PNG decode failed.");
+        if (decoded.Width != width || decoded.Height != height) throw new Exception("Unexpected rendered dimensions.");
+        var colors = new HashSet<int>();
+        double sum = 0, squared = 0;
+        var opaque = 0;
+        foreach (var color in decoded.Pixels)
+        {
+            if (color.Alpha > 240) opaque++;
+            colors.Add((color.Red >> 4) << 8 | (color.Green >> 4) << 4 | color.Blue >> 4);
+            var luminance = .2126 * color.Red + .7152 * color.Green + .0722 * color.Blue;
+            sum += luminance;
+            squared += luminance * luminance;
+        }
+        var count = decoded.Width * decoded.Height;
+        var variance = squared / count - Math.Pow(sum / count, 2);
+        Console.WriteLine($"PNG={path} SIZE={decoded.Width}x{decoded.Height} COLORS={colors.Count} VARIANCE={variance:F3} OPAQUE={opaque}/{count}");
+        if (colors.Count < 20 || variance < 100 || opaque < count * .9)
+            throw new Exception($"NON_VACUITY_FAILED: colors={colors.Count}, variance={variance:F3}, opaque={opaque}/{count}");
+    }
+}

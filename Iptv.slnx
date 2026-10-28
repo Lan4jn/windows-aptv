@@ -1,0 +1,9 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Iptv.Core/Iptv.Core.csproj" />
+    <Project Path="src/Iptv.Desktop/Iptv.Desktop.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Iptv.Core.Tests/Iptv.Core.Tests.csproj" />
+  </Folder>
+</Solution>

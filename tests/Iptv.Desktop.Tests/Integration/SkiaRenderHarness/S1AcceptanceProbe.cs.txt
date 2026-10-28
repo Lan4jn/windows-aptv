@@ -1,0 +1,50 @@
+using System.Text;
+using System.Text.Json;
+using Iptv.Core.Models;
+using Iptv.Core.Library;
+using Iptv.Core.Security;
+
+public static class S1AcceptanceProbe
+{
+    public static async Task Run(string output)
+    {
+        var directory=Path.Combine(output,"synthetic-library");Directory.CreateDirectory(directory);
+        var protector=new SyntheticProtector();var store=new LibraryStateStore(directory,protector);
+        foreach(var fragment in new[]{"\"Favorites\":null","\"RecentHistory\":null","\"RecentHistory\":[null]","\"Favorites\":[null]","\"SourcePasswords\":null","\"ProxyAuthentication\":null"})
+        {
+            var before=Protected("{\"SchemaVersion\":2,"+fragment+"}",protector);await File.WriteAllBytesAsync(store.StateFilePath,before);
+            try{await store.LoadAsync();throw new Exception("MALFORMED_ACCEPTED");}catch(InvalidDataException e){Console.WriteLine("MALFORMED_CONTROLLED fragment="+fragment+" inner="+e.InnerException?.GetType().Name);}
+            var after=await File.ReadAllBytesAsync(store.StateFilePath); if(!before.SequenceEqual(after))throw new Exception("MALFORMED_ORIGINAL_CHANGED");
+            if(!Directory.GetFiles(directory,"library.corrupt.*.bak").Any(p=>File.ReadAllBytes(p).SequenceEqual(before)))throw new Exception("MALFORMED_BACKUP_MISSING");
+        }
+        foreach(var endpoint in new[]{"https://proxy.fixture.invalid:8443/non-root","http://proxy.fixture.invalid:8080/path"})
+        {
+            var proxy=new UserProxy("p","synthetic",ProxyKind.Http,endpoint);
+            Console.WriteLine("MODEL_ACCEPTS_ENDPOINT="+proxy.Endpoint+" NETWORK_ROUTING=NOT_TESTED_NOT_IMPLEMENTED_BY_S1");
+        }
+        var source=new SourceConfig("s","synthetic",SourceKind.Xtream,"https://fixture.invalid",username:"synthetic-user",password:"synthetic-source-secret",order:8,proxyId:"p");
+        var auth=new UserProxy("p","synthetic",ProxyKind.Http,"http://proxy.fixture.invalid:8080","synthetic-proxy-user","synthetic-proxy-secret");
+        var state=new LibraryState{Sources=new[]{source},UserProxies=new[]{auth}};
+        var plain=JsonSerializer.Serialize(state);
+        if(plain.Contains("synthetic-source-secret")||plain.Contains("synthetic-proxy-secret")||plain.Contains("synthetic-proxy-user"))throw new Exception("ORDINARY_JSON_LEAK");
+        // Overwrite only this owned synthetic fixture, preserving no user data.
+        await File.WriteAllBytesAsync(store.StateFilePath,Protected("{\"SchemaVersion\":2}",protector));
+        await store.SaveAsync(state);var bytes=await File.ReadAllBytesAsync(store.StateFilePath);var roundtrip=await store.LoadAsync();
+        if(roundtrip.Sources.Single().Password!="synthetic-source-secret"||roundtrip.UserProxies.Single().Password!="synthetic-proxy-secret"||roundtrip.UserProxies.Single().Username!="synthetic-proxy-user"||roundtrip.Sources.Single().Order!=8)throw new Exception("SENSITIVE_ROUNDTRIP_FAILED");
+        if(Encoding.UTF8.GetString(bytes).Contains("synthetic-source-secret")||Encoding.UTF8.GetString(bytes).Contains("synthetic-proxy-secret"))throw new Exception("DISK_CLEAR_SECRET");
+        var unprotected=new LibraryStateStore(Path.Combine(directory,"no-protector"));try{await unprotected.SaveAsync(state);throw new Exception("UNPROTECTED_AUTH_SAVED");}catch(InvalidOperationException){Console.WriteLine("UNPROTECTED_AUTH_REJECTED=True");}
+        foreach(var protectedFile in new[]{false,true})
+        {
+            var future="{\"SchemaVersion\":999,\"Future\":\"preserve\"}";var before=protectedFile?Protected(future,protector):Encoding.UTF8.GetBytes(future);await File.WriteAllBytesAsync(store.StateFilePath,before);
+            var fresh=new LibraryStateStore(directory,protectedFile?protector:null);try{await fresh.SaveAsync(new LibraryState());throw new Exception("FUTURE_OVERWRITTEN");}catch(NotSupportedException){Console.WriteLine("FUTURE_SINGLE_PROCESS_PRESERVED protected="+protectedFile);}
+            var after=await File.ReadAllBytesAsync(store.StateFilePath); if(!before.SequenceEqual(after))throw new Exception("FUTURE_CHANGED");
+        }
+        Console.WriteLine("S1_INDEPENDENT_ACCEPTANCE=PASS (synthetic protection; no proxy connections)");
+    }
+    private static byte[] Protected(string json,ILibraryStateProtector protector)=>Encoding.UTF8.GetBytes("IPTV_PROTECTED_V1\n").Concat(protector.Protect(Encoding.UTF8.GetBytes(json))).ToArray();
+    private sealed class SyntheticProtector:ILibraryStateProtector
+    {
+        public byte[] Protect(byte[] value)=>value.Select(x=>(byte)(x^0xA5)).ToArray();
+        public byte[] Unprotect(byte[] value)=>Protect(value);
+    }
+}

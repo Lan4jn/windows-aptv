@@ -1,0 +1,34 @@
+using Avalonia;
+using Avalonia.Controls;
+using Avalonia.Threading;
+using Iptv.Desktop;
+using Iptv.Desktop.Tests;
+using Iptv.Desktop.Services;
+using Iptv.Desktop.ViewModels;
+
+public static class LocalPlaybackRunner
+{
+ public static int Run(string output)
+ {
+  var file=Path.GetFullPath(Path.Combine(output,"synthetic media %.mp4"));File.WriteAllBytes(file,new byte[]{1,2,3});
+  foreach(var width in new[]{850,1280}){
+   var library=new FakeLibraryService();var player=new FakePlayer();
+   var vm=new MainWindowViewModel(new FakePlaylistService(),library,new FakeEpgService(),player){PickLocalMediaAsync=()=>Task.FromResult<string?>(file)};
+   var window=new MainWindow{DataContext=vm,Width=width,Height=600};
+   try{window.Show();Program.Complete(window.InitializationTask);window.UpdateLayout();Dispatcher.UIThread.RunJobs();
+    var button=window.FindControl<Button>("OpenLocalMediaButton")!;var point=button.TranslatePoint(default,window)!.Value;
+    if(!ReferenceEquals(button.Command,vm.OpenLocalMediaCommand)||point.X<0||point.Y<0||point.X+button.Bounds.Width>width||point.Y+button.Bounds.Height>600)throw new Exception("LOCAL_BUTTON_NOT_BOUND_OR_OUTSIDE");
+    Program.Complete(((AsyncRelayCommand)button.Command!).ExecuteAsync(null));window.UpdateLayout();Dispatcher.UIThread.RunJobs();
+    if(player.State!=PlayerState.Playing||player.CurrentChannel?.Name!=Path.GetFileName(file)||new Uri(player.CurrentChannel.StreamUrl).LocalPath!=file)throw new Exception("LOCAL_BUTTON_ROUTE_FAILED");
+    var previous=player.CurrentChannel;vm.PickLocalMediaAsync=()=>Task.FromResult<string?>(null);Program.Complete(((AsyncRelayCommand)button.Command!).ExecuteAsync(null));
+    if(!ReferenceEquals(previous,player.CurrentChannel))throw new Exception("CANCEL_REPLACED_CHANNEL");
+    if(window.FindControl<LibVLCSharp.Avalonia.VideoView>("PlayerVideoView")==null)throw new Exception("VIDEO_VIEW_REMOVED");
+    Program.Capture(window,output,"local-"+width,width,600);
+    Program.Complete(vm.PlayerVm.PauseCommand.ExecuteAsync(null));if(player.State!=PlayerState.Paused)throw new Exception("PAUSE_NOT_SAME_SESSION");
+    Program.Complete(vm.PlayerVm.StopCommand.ExecuteAsync(null));if(player.State!=PlayerState.Stopped)throw new Exception("STOP_NOT_SAME_SESSION");
+    Console.WriteLine($"LOCAL_BUTTON case={width} bounds={point}/{button.Bounds.Size} noSources=True basename=True cancelPreserved=True pauseStopSameSession=True FAKE_DECODE_ONLY=True");
+   }finally{window.Close();Dispatcher.UIThread.RunJobs();}
+  }
+  return 0;
+ }
+}

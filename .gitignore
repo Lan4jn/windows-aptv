@@ -1,0 +1,21 @@
+# Tooling and local SDK
+.tools/
+
+# Build artifacts and intermediate files
+bin/
+obj/
+artifacts/
+
+# Credentials and sensitive tokens
+creds/
+*.creds
+*.credentials
+
+# IDE and OS files
+.vs/
+.idea/
+.vscode/
+*.user
+*.suo
+.DS_Store
+Thumbs.db

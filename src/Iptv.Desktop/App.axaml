@@ -1,0 +1,12 @@
+<Application xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             x:Class="Iptv.Desktop.App"
+             RequestedThemeVariant="Dark">
+    <!-- 固定深色：README 记载「首版固定使用深色主题」，主题切换在 UI 中禁用。
+         此前为 "Default"（跟随系统），导致 Light 系统下出现「深字 + 硬编码深底」不可读。
+         依据见 docs/review/evidence/phase1-render-findings.md 的缺陷 1。 -->
+
+    <Application.Styles>
+        <FluentTheme />
+    </Application.Styles>
+</Application>

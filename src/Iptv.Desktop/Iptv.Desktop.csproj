@@ -1,0 +1,26 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>Iptv.Desktop</RootNamespace>
+    <AvaloniaBuildTelemetryEnabled>false</AvaloniaBuildTelemetryEnabled>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Avalonia" Version="11.3.13" />
+    <PackageReference Include="Avalonia.Desktop" Version="11.3.13" />
+    <PackageReference Include="Avalonia.Themes.Fluent" Version="11.3.13" />
+    <PackageReference Include="LibVLCSharp" Version="3.10.1" />
+    <PackageReference Include="LibVLCSharp.Avalonia" Version="3.10.1" />
+    <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="9.0.2" />
+    <PackageReference Include="VideoLAN.LibVLC.Windows" Version="3.0.24" Condition="'$(RuntimeIdentifier)' == 'win-x64' or '$(RuntimeIdentifier)' == 'win-arm64' or '$([MSBuild]::IsOSPlatform(&quot;Windows&quot;))'" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Iptv.Core\Iptv.Core.csproj" />
+  </ItemGroup>
+
+</Project>

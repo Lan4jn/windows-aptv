@@ -1,0 +1,6 @@
+<Project>
+  <PropertyGroup>
+    <BaseIntermediateOutputPath>$(MSBuildThisFileDirectory)../../obj/SkiaRenderHarness/</BaseIntermediateOutputPath>
+    <BaseOutputPath>$(MSBuildThisFileDirectory)../../bin/SkiaRenderHarness/</BaseOutputPath>
+  </PropertyGroup>
+</Project>

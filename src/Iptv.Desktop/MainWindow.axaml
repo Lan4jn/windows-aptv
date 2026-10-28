@@ -1,0 +1,548 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="using:Iptv.Desktop.ViewModels"
+        xmlns:m="using:Iptv.Core.Models"
+        xmlns:vlc="using:LibVLCSharp.Avalonia"
+        x:Class="Iptv.Desktop.MainWindow"
+        x:Name="RootWindow"
+        x:DataType="vm:MainWindowViewModel"
+        Title="{Binding Title}"
+        Width="1080" Height="720"
+        MinWidth="850" MinHeight="600"
+        WindowStartupLocation="CenterScreen"
+        Background="#181818"
+        Foreground="#ECECEC">
+
+    <Grid ColumnDefinitions="240, *">
+
+        <!-- 左侧导航侧边栏 -->
+        <Border Grid.Column="0" Background="#202020" BorderBrush="#2C2C2C" BorderThickness="0,0,1,0">
+            <Grid RowDefinitions="Auto, Auto, *, Auto">
+                <!-- 独立品牌标题 (无原版商标宣称) -->
+                <StackPanel Grid.Row="0" Margin="18,18,18,14" Spacing="4">
+                    <TextBlock Text="IPTV" FontSize="20" FontWeight="Bold" Foreground="#E040FB" />
+                    <TextBlock Text="桌面播放器" FontSize="11" Foreground="#888888" />
+                </StackPanel>
+
+                <!-- 一级导航按钮 (严格对齐 REA 真实顺位: 频道 -> 收藏 -> 配置 -> 设置 -> 搜索) -->
+                <StackPanel Grid.Row="1" Margin="10,0,10,12" Spacing="4">
+                    <Button Command="{Binding NavigateToChannelsCommand}" HorizontalAlignment="Stretch" Padding="12,8" Background="Transparent">
+                        <StackPanel Orientation="Horizontal" Spacing="10">
+                            <TextBlock Text="📺" FontSize="14" />
+                            <TextBlock Text="频道" FontSize="14" FontWeight="SemiBold" />
+                        </StackPanel>
+                    </Button>
+                    <Button Command="{Binding NavigateToFavoritesCommand}" HorizontalAlignment="Stretch" Padding="12,8" Background="Transparent">
+                        <StackPanel Orientation="Horizontal" Spacing="10">
+                            <TextBlock Text="♥" FontSize="14" Foreground="#FF4081" />
+                            <TextBlock Text="收藏" FontSize="14" FontWeight="SemiBold" />
+                        </StackPanel>
+                    </Button>
+                    <Button Command="{Binding NavigateToConfigsCommand}" HorizontalAlignment="Stretch" Padding="12,8" Background="Transparent">
+                        <StackPanel Orientation="Horizontal" Spacing="10">
+                            <TextBlock Text="📁" FontSize="14" />
+                            <TextBlock Text="配置" FontSize="14" FontWeight="SemiBold" />
+                        </StackPanel>
+                    </Button>
+                    <Button Command="{Binding NavigateToSettingsCommand}" HorizontalAlignment="Stretch" Padding="12,8" Background="Transparent">
+                        <StackPanel Orientation="Horizontal" Spacing="10">
+                            <TextBlock Text="⚙" FontSize="14" />
+                            <TextBlock Text="设置" FontSize="14" FontWeight="SemiBold" />
+                        </StackPanel>
+                    </Button>
+                    <Button Command="{Binding NavigateToSearchCommand}" HorizontalAlignment="Stretch" Padding="12,8" Background="Transparent">
+                        <StackPanel Orientation="Horizontal" Spacing="10">
+                            <TextBlock Text="🔍" FontSize="14" />
+                            <TextBlock Text="搜索" FontSize="14" FontWeight="SemiBold" />
+                        </StackPanel>
+                    </Button>
+                </StackPanel>
+
+                <!-- 侧栏配置源列表 (安全脱敏 URL 显示) -->
+                <DockPanel Grid.Row="2" Margin="14,10,14,10">
+                    <TextBlock DockPanel.Dock="Top" Text="我的配置" FontSize="12" FontWeight="SemiBold" Foreground="#9E9E9E" Margin="4,0,0,8" />
+                    <ScrollViewer VerticalScrollBarVisibility="Auto">
+                        <ItemsControl ItemsSource="{Binding ConfigsVm.Configs}">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate DataType="vm:SourceConfigItemViewModel">
+                                    <Border Margin="0,2" Padding="8,6" Background="#282828" CornerRadius="6">
+                                        <StackPanel Spacing="2">
+                                            <TextBlock Text="{Binding Name}" FontSize="12" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
+                                            <TextBlock Text="{Binding SafeDisplayLocation}" FontSize="10" Foreground="#757575" TextTrimming="CharacterEllipsis" />
+                                        </StackPanel>
+                                    </Border>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                    </ScrollViewer>
+                </DockPanel>
+
+                <!-- 底栏安全指示 -->
+                <StackPanel Grid.Row="3" Margin="12" Spacing="8">
+                    <Button x:Name="OpenLocalMediaButton" Command="{Binding OpenLocalMediaCommand}" Content="打开本地媒体" HorizontalAlignment="Stretch" />
+                    <TextBlock Text="容器筛选不保证解码支持" FontSize="10" Foreground="#AAAAAA" TextWrapping="Wrap" />
+                    <Border Padding="8" Background="#262626" CornerRadius="6">
+                        <TextBlock Text="{Binding SettingsVm.ProtectionStatus}" FontSize="10" Foreground="#00E676" TextWrapping="Wrap" />
+                    </Border>
+                </StackPanel>
+            </Grid>
+        </Border>
+
+        <!-- 右侧主工作区 (错误横幅 + 内容区 + 原生视频宿主 + 底部停靠控制条) -->
+        <Grid Grid.Column="1" RowDefinitions="Auto, *, Auto, Auto">
+
+            <!-- 0. 全局安全错误提示横幅 (Root Error Banner) -->
+            <Border x:Name="RootErrorBanner"
+                    Grid.Row="0"
+                    Background="#B71C1C"
+                    Padding="16,10"
+                    IsVisible="{Binding ErrorMessage, Converter={x:Static StringConverters.IsNotNullOrEmpty}}">
+                <Grid ColumnDefinitions="Auto, *, Auto">
+                    <TextBlock Grid.Column="0" Text="⚠ " FontSize="14" Foreground="#FFFFFF" VerticalAlignment="Center" />
+                    <TextBlock x:Name="RootErrorTextBlock"
+                               Grid.Column="1"
+                               Text="{Binding ErrorMessage}"
+                               Foreground="#FFFFFF"
+                               FontSize="12"
+                               FontWeight="SemiBold"
+                               TextWrapping="Wrap"
+                               VerticalAlignment="Center" />
+                    <Button Grid.Column="2"
+                            Command="{Binding DismissErrorCommand}"
+                            Content="✕"
+                            Background="Transparent"
+                            Foreground="#FFFFFF"
+                            Padding="8,4"
+                            VerticalAlignment="Center" />
+                </Grid>
+            </Border>
+
+            <!-- 1. 页面内容切换区域 -->
+            <Panel Grid.Row="1">
+
+                <!-- 频道列表视图 (ChannelsView) -->
+                <Grid RowDefinitions="Auto, *" IsVisible="{Binding #RootWindow.DataContext.IsChannelsSection}" DataContext="{Binding ChannelsVm}">
+                    <Border Grid.Row="0" Background="#1E1E1E" Padding="16,10" BorderBrush="#2C2C2C" BorderThickness="0,0,0,1">
+                        <Grid RowDefinitions="Auto, Auto" ColumnDefinitions="*, *" RowSpacing="8" ColumnSpacing="12">
+                            <Grid Grid.Row="0" Grid.Column="0" ColumnDefinitions="Auto, *" ColumnSpacing="8">
+                                <TextBlock Text="当前分组:" VerticalAlignment="Center" FontSize="12" Foreground="#888888" />
+                                <ComboBox Grid.Column="1" ItemsSource="{Binding Groups}" SelectedItem="{Binding SelectedGroup}" HorizontalAlignment="Stretch" FontSize="12" />
+                            </Grid>
+                            <ComboBox x:Name="SourcePicker" Grid.Row="0" Grid.Column="1" HorizontalAlignment="Stretch" ItemsSource="{Binding #RootWindow.DataContext.ConfigsVm.Configs}" SelectedItem="{Binding #RootWindow.DataContext.ConfigsVm.SelectedConfig, Mode=TwoWay}" DisplayMemberBinding="{Binding Name}" />
+                            <Grid Grid.Row="1" Grid.ColumnSpan="2" ColumnDefinitions="*, Auto" ColumnSpacing="12">
+                                <TextBox Text="{Binding SearchText}" Watermark="过滤当前频道..." HorizontalAlignment="Stretch" />
+                                <Button Grid.Column="1" Command="{Binding RefreshCommand}" Content="刷新" MinWidth="64" />
+                            </Grid>
+                        </Grid>
+                    </Border>
+
+                    <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
+                        <StackPanel Margin="16">
+                            <Border x:Name="NoSourcesGuidance" IsVisible="{Binding #RootWindow.DataContext.HasNoSources}" Background="#282828" Padding="14" Margin="0,0,0,12" CornerRadius="6">
+                                <StackPanel Spacing="8">
+                                    <TextBlock Text="尚未添加频道源" FontSize="16" FontWeight="SemiBold" />
+                                    <TextBlock Text="添加 M3U 订阅或本地播放列表后，即可浏览频道。也可前往配置添加 Xtream 来源。" TextWrapping="Wrap" FontSize="12" />
+                                    <Button x:Name="AddFirstSourceButton" Command="{Binding #RootWindow.DataContext.AddFirstSourceCommand}" Content="添加 M3U 配置" />
+                                </StackPanel>
+                            </Border>
+                            <TextBlock x:Name="ChannelsStatus" Text="{Binding StatusMessage}" FontSize="11" Foreground="#757575" Margin="0,0,0,10" />
+                            <Border Background="#282828" Padding="10" Margin="0,0,0,10" CornerRadius="6">
+                                <StackPanel Spacing="4">
+                                    <TextBlock Text="选中频道节目" FontSize="12" FontWeight="SemiBold" />
+                                    <TextBlock Text="当前节目" FontSize="10" Foreground="#999999" />
+                                    <TextBlock x:Name="CurrentProgrammeTitle" Text="{Binding CurrentProgrammeTitle, TargetNullValue='暂无当前节目'}" FontSize="12" />
+                                    <TextBlock x:Name="CurrentProgrammeTime" Text="{Binding CurrentProgrammeTime, TargetNullValue=''}" FontSize="10" />
+                                    <TextBlock Text="下一节目" FontSize="10" Foreground="#999999" />
+                                    <TextBlock x:Name="NextProgrammeTitle" Text="{Binding NextProgrammeTitle, TargetNullValue='暂无下一节目'}" FontSize="12" />
+                                    <TextBlock x:Name="NextProgrammeTime" Text="{Binding NextProgrammeTime, TargetNullValue=''}" FontSize="10" />
+                                </StackPanel>
+                            </Border>
+                            <!-- 频道网格卡片 (对齐 REA 观测: 4列参考网格、宽幅占位、台标与流参数) -->
+                            <ItemsControl ItemsSource="{Binding FilteredChannels}">
+                                <ItemsControl.ItemsPanel>
+                                    <ItemsPanelTemplate>
+                                        <WrapPanel Orientation="Horizontal" />
+                                    </ItemsPanelTemplate>
+                                </ItemsControl.ItemsPanel>
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate DataType="m:Channel">
+                                        <Border Width="185" Margin="6" Padding="10" Background="#222222" CornerRadius="8" BorderBrush="#2F2F2F" BorderThickness="1">
+                                            <StackPanel Spacing="6">
+                                                <Border Height="80" Background="#141414" CornerRadius="6">
+                                                    <Grid>
+                                                        <TextBlock Text="📺" FontSize="26" HorizontalAlignment="Center" VerticalAlignment="Center" Foreground="#444444" />
+                                                        <!-- 右下角分组标签 (移除未检测的假测速药丸) -->
+                                                        <Border HorizontalAlignment="Right" VerticalAlignment="Bottom" Margin="4" Padding="4,1" Background="#33FFFFFF" CornerRadius="3">
+                                                            <TextBlock Text="{Binding Group}" MaxWidth="140" TextTrimming="CharacterEllipsis" ToolTip.Tip="{Binding Group}" FontSize="9" Foreground="#CCCCCC" />
+                                                        </Border>
+                                                    </Grid>
+                                                </Border>
+
+                                                <TextBlock Text="{Binding Name}" FontSize="13" FontWeight="Bold" TextTrimming="CharacterEllipsis" Foreground="#FFFFFF" />
+                                                <TextBlock Text="{Binding StreamUrl, Converter={x:Static vm:SafeUrlConverter.Instance}}" FontSize="10" Foreground="#777777" TextTrimming="CharacterEllipsis" />
+
+                                                <Grid ColumnDefinitions="*, Auto">
+                                                    <Button Grid.Column="0" Command="{Binding $parent[ItemsControl].DataContext.PlayChannelCommand}" CommandParameter="{Binding}" Content="▶ 播放" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" Background="#7C4DFF" Foreground="#FFFFFF" FontSize="11" Padding="4,4" />
+                                                    <Button Grid.Column="1" Command="{Binding $parent[ItemsControl].DataContext.ToggleFavoriteCommand}" CommandParameter="{Binding}" Content="♥" Margin="4,0,0,0" Background="#333333" FontSize="11" Padding="6,4" />
+                                                </Grid>
+                                            </StackPanel>
+                                        </Border>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                        </StackPanel>
+                    </ScrollViewer>
+                </Grid>
+
+                <!-- 收藏视图 (FavoritesView) -->
+                <Grid RowDefinitions="Auto, *" IsVisible="{Binding #RootWindow.DataContext.IsFavoritesSection}" DataContext="{Binding FavoritesVm}">
+                    <Border Grid.Row="0" Background="#1E1E1E" Padding="16,12" BorderBrush="#2C2C2C" BorderThickness="0,0,0,1">
+                        <TextBlock Text="我的收藏频道" FontSize="16" FontWeight="Bold" />
+                    </Border>
+                    <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
+                        <ItemsControl ItemsSource="{Binding FavoriteChannels}" Margin="16">
+                            <ItemsControl.ItemsPanel>
+                                <ItemsPanelTemplate>
+                                    <WrapPanel Orientation="Horizontal" />
+                                </ItemsPanelTemplate>
+                            </ItemsControl.ItemsPanel>
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate DataType="m:Channel">
+                                    <Border Width="185" Margin="6" Padding="10" Background="#222222" CornerRadius="8" BorderBrush="#2F2F2F" BorderThickness="1">
+                                        <StackPanel Spacing="6">
+                                            <Border Height="80" Background="#141414" CornerRadius="6">
+                                                <TextBlock Text="♥" FontSize="28" HorizontalAlignment="Center" VerticalAlignment="Center" Foreground="#FF4081" />
+                                            </Border>
+                                            <TextBlock Text="{Binding Name}" FontSize="13" FontWeight="Bold" TextTrimming="CharacterEllipsis" />
+                                            <Grid ColumnDefinitions="*, Auto">
+                                                <Button Grid.Column="0" Command="{Binding $parent[ItemsControl].DataContext.PlayChannelCommand}" CommandParameter="{Binding}" Content="▶ 播放" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" Background="#7C4DFF" FontSize="11" />
+                                                <Button Grid.Column="1" Command="{Binding $parent[ItemsControl].DataContext.RemoveFavoriteCommand}" CommandParameter="{Binding}" Content="✕" Margin="4,0,0,0" Background="#333333" FontSize="11" />
+                                            </Grid>
+                                        </StackPanel>
+                                    </Border>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                    </ScrollViewer>
+                </Grid>
+
+                <!-- 配置管理视图 (ConfigsView) -->
+                <Grid RowDefinitions="Auto, Auto, *" IsVisible="{Binding #RootWindow.DataContext.IsConfigsSection}" DataContext="{Binding ConfigsVm}">
+                    <Border Grid.Row="0" Background="#1E1E1E" Padding="16,10" BorderBrush="#2C2C2C" BorderThickness="0,0,0,1">
+                        <Grid ColumnDefinitions="*, Auto, Auto" IsEnabled="{Binding !IsSavingChanges}">
+                            <TextBlock Grid.Column="0" Text="订阅与配置管理" FontSize="16" FontWeight="Bold" VerticalAlignment="Center" />
+                            <Button Grid.Column="1" Command="{Binding OpenAddM3uDialogCommand}" Content="+ 添加 M3U 配置" Background="#E040FB" Foreground="#FFFFFF" Margin="0,0,8,0" />
+                            <Button Grid.Column="2" Command="{Binding OpenAddXtreamDialogCommand}" Content="+ 添加 Xtream 配置" Background="#00B0FF" Foreground="#FFFFFF" />
+                        </Grid>
+                    </Border>
+                    <TextBlock Grid.Row="1" Text="{Binding EditError}" Foreground="#FF5252" TextWrapping="Wrap" Margin="16,4" />
+                    <ScrollViewer x:Name="ConfigManagementScroll" Grid.Row="2" VerticalScrollBarVisibility="Auto">
+                        <StackPanel>
+                        <ItemsControl ItemsSource="{Binding Configs}" Margin="16" IsEnabled="{Binding !IsSavingChanges}">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate DataType="vm:SourceConfigItemViewModel">
+                                    <Border Margin="0,6" Padding="14" Background="#222222" CornerRadius="8" BorderBrush="#2F2F2F" BorderThickness="1">
+                                        <Grid ColumnDefinitions="*, Auto">
+                                            <StackPanel Grid.Column="0" Spacing="4">
+                                                <StackPanel Orientation="Horizontal" Spacing="8">
+                                                    <TextBlock Text="{Binding Name}" FontSize="14" FontWeight="Bold" />
+                                                    <Border Background="#333333" CornerRadius="4" Padding="6,1">
+                                                        <TextBlock Text="{Binding Kind}" FontSize="10" Foreground="#00E676" />
+                                                    </Border>
+                                                </StackPanel>
+                                                <!-- 脱敏安全显示 Location -->
+                                                <TextBlock Text="{Binding SafeDisplayLocation}" FontSize="11" Foreground="#888888" TextTrimming="CharacterEllipsis" />
+                                            </StackPanel>
+                                            <StackPanel Grid.Column="1" Spacing="4" Margin="8,0,0,0">
+                                                <Button Command="{Binding $parent[ItemsControl].DataContext.OpenEditCommand}" CommandParameter="{Binding}" Content="编辑" FontSize="11" />
+                                                <StackPanel Orientation="Horizontal" Spacing="4">
+                                                    <Button Command="{Binding $parent[ItemsControl].DataContext.MoveUpCommand}" CommandParameter="{Binding}" Content="上移" FontSize="11" />
+                                                    <Button Command="{Binding $parent[ItemsControl].DataContext.MoveDownCommand}" CommandParameter="{Binding}" Content="下移" FontSize="11" />
+                                                </StackPanel>
+                                                <Button Command="{Binding $parent[ItemsControl].DataContext.DeleteConfigCommand}" CommandParameter="{Binding}" Content="删除" Background="#D50000" FontSize="11" />
+                                            </StackPanel>
+                                        </Grid>
+                                    </Border>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                        <Border Margin="16" Padding="14" Background="#222222" CornerRadius="8" DataContext="{Binding ProxyProfilesVm}">
+                            <StackPanel Spacing="10" IsEnabled="{Binding !IsBusy}">
+                                <TextBlock Text="订阅/EPG 代理档案" FontSize="16" FontWeight="SemiBold" />
+                                <TextBlock Text="{x:Static vm:ProxyProfilesViewModel.ScopeNotice}" TextWrapping="Wrap" FontSize="11" />
+                                <TextBlock Text="{x:Static vm:ProxyProfilesViewModel.RefreshNotice}" TextWrapping="Wrap" FontSize="11" Foreground="#AAAAAA" />
+                                <TextBlock x:Name="ProxyStatusMessage" Text="{Binding Message}" TextWrapping="Wrap" Foreground="#FFC107" FontSize="11" />
+                                <Button x:Name="AddProxyProfileButton" Command="{Binding AddCommand}" Content="新增代理档案" />
+                                <ItemsControl ItemsSource="{Binding Profiles}">
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate DataType="vm:ProxyProfileItem">
+                                            <Grid ColumnDefinitions="*, Auto, Auto" ColumnSpacing="6" Margin="0,4">
+                                                <StackPanel>
+                                                    <TextBlock Text="{Binding Name}" TextTrimming="CharacterEllipsis" />
+                                                    <TextBlock Text="{Binding SafeEndpoint}" TextTrimming="CharacterEllipsis" FontSize="10" />
+                                                </StackPanel>
+                                                <Button Grid.Column="1" Command="{Binding $parent[ItemsControl].DataContext.EditCommand}" CommandParameter="{Binding}" Content="编辑" />
+                                                <Button Grid.Column="2" Command="{Binding $parent[ItemsControl].DataContext.DeleteCommand}" CommandParameter="{Binding}" Content="删除" />
+                                            </Grid>
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
+                                <Border x:Name="ProxyProfileEditor" IsVisible="{Binding IsEditing}" BorderThickness="1" BorderBrush="#555555" Padding="10">
+                                    <StackPanel Spacing="6">
+                                        <StackPanel DataContext="{Binding Draft}" Spacing="6">
+                                            <TextBlock Text="档案名称" />
+                                            <TextBox x:Name="ProxyNameInput" Text="{Binding Name}" />
+                                            <TextBlock Text="类型" />
+                                            <ComboBox x:Name="ProxyKindPicker" ItemsSource="{x:Static vm:ProxyProfileDraft.Kinds}" SelectedItem="{Binding Kind, Mode=TwoWay}" HorizontalAlignment="Stretch" />
+                                            <TextBlock Text="{Binding SafeEndpoint}" TextTrimming="CharacterEllipsis" FontSize="11" />
+                                            <TextBlock Text="端点：仅 http://host:port 或 socks5://host:port；不接受 https、认证或路径" TextWrapping="Wrap" FontSize="11" />
+                                            <StackPanel DataContext="{Binding Endpoint}" Spacing="4">
+                                                <ComboBox ItemsSource="{x:Static vm:ConfigEditField.Actions}" SelectedItem="{Binding Action, Mode=TwoWay}" HorizontalAlignment="Stretch" />
+                                                <TextBox x:Name="ProxyEndpointInput" Text="{Binding Value}" Watermark="替换时填写端点（含端口）" />
+                                            </StackPanel>
+                                            <TextBlock Text="用户名：不回显旧值" FontSize="11" />
+                                            <StackPanel DataContext="{Binding Username}" Spacing="4">
+                                                <ComboBox ItemsSource="{x:Static vm:ConfigEditField.Actions}" SelectedItem="{Binding Action, Mode=TwoWay}" HorizontalAlignment="Stretch" />
+                                                <TextBox x:Name="ProxyUsernameInput" Text="{Binding Value}" PasswordChar="●" Watermark="仅替换时填写新用户名" />
+                                            </StackPanel>
+                                            <TextBlock Text="密码：不回显旧值" FontSize="11" />
+                                            <StackPanel DataContext="{Binding Password}" Spacing="4">
+                                                <ComboBox ItemsSource="{x:Static vm:ConfigEditField.Actions}" SelectedItem="{Binding Action, Mode=TwoWay}" HorizontalAlignment="Stretch" />
+                                                <TextBox x:Name="ProxyPasswordInput" Text="{Binding Value}" PasswordChar="●" Watermark="仅替换时填写新密码" />
+                                            </StackPanel>
+                                        </StackPanel>
+                                        <StackPanel Orientation="Horizontal" Spacing="8">
+                                            <Button x:Name="SaveProxyProfileButton" Command="{Binding SaveCommand}" Content="保存档案" />
+                                            <Button x:Name="CancelProxyProfileButton" Command="{Binding CancelCommand}" Content="取消编辑" />
+                                        </StackPanel>
+                                    </StackPanel>
+                                </Border>
+                                <TextBlock Text="来源代理分配" FontSize="14" FontWeight="SemiBold" />
+                                <ItemsControl ItemsSource="{Binding Sources}">
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate DataType="vm:SourceProxyAssignment">
+                                            <StackPanel Spacing="6" Margin="0,6">
+                                                <TextBlock Text="{Binding Name}" TextTrimming="CharacterEllipsis" FontWeight="SemiBold" />
+                                                <TextBlock Text="{Binding CurrentProxyName, StringFormat='已保存：{0}'}" FontSize="11" />
+                                                <TextBlock Text="{x:Static vm:ProxyProfilesViewModel.ScopeNotice}" TextWrapping="Wrap" FontSize="11" Foreground="#FFC107" />
+                                                <ComboBox ItemsSource="{Binding Choices}" SelectedItem="{Binding Selected, Mode=TwoWay}" DisplayMemberBinding="{Binding Name}" HorizontalAlignment="Stretch" />
+                                                <StackPanel Orientation="Horizontal" Spacing="8">
+                                                    <Button Command="{Binding $parent[ItemsControl].DataContext.AssignCommand}" CommandParameter="{Binding}" Content="保存分配" />
+                                                    <Button Command="{Binding $parent[ItemsControl].DataContext.CancelAssignmentCommand}" CommandParameter="{Binding}" Content="取消分配" />
+                                                </StackPanel>
+                                            </StackPanel>
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
+                            </StackPanel>
+                        </Border>
+                        </StackPanel>
+                    </ScrollViewer>
+                </Grid>
+
+                <!-- 偏好设置视图 (SettingsView) -->
+                <ScrollViewer IsVisible="{Binding #RootWindow.DataContext.IsSettingsSection}" DataContext="{Binding SettingsVm}" Margin="20">
+                    <StackPanel Spacing="18" MaxWidth="600" HorizontalAlignment="Left">
+                        <TextBlock Text="偏好设置" FontSize="18" FontWeight="Bold" />
+
+                        <!-- 外观与主题 -->
+                        <Border Background="#222222" Padding="16" CornerRadius="8">
+                            <StackPanel Spacing="10">
+                                <TextBlock Text="外观设置" FontSize="14" FontWeight="SemiBold" Foreground="#E040FB" />
+                                <Grid ColumnDefinitions="*, Auto">
+                                    <TextBlock Grid.Column="0" Text="界面主题" VerticalAlignment="Center" />
+                                    <ComboBox Grid.Column="1" ItemsSource="{Binding AvailableThemes}" SelectedItem="{Binding SelectedTheme}" Width="140" IsEnabled="False" ToolTip.Tip="首版固定深色主题；主题切换未实现" />
+                                </Grid>
+                                <Grid ColumnDefinitions="*, Auto">
+                                    <TextBlock Grid.Column="0" Text="默认启动标签页" VerticalAlignment="Center" />
+                                    <ComboBox Grid.Column="1" ItemsSource="{Binding AvailableDefaultSections}" SelectedItem="{Binding DefaultSection}" Width="140" IsEnabled="False" ToolTip.Tip="首版固定从频道页启动；默认页设置未实现" />
+                                </Grid>
+                                <Grid ColumnDefinitions="*, 220" Margin="0,4,0,0">
+                                    <StackPanel Grid.Column="0">
+                                        <TextBlock Text="全局默认 EPG 节目单地址" VerticalAlignment="Center" />
+                                        <TextBlock Text="当前会话有效；修改后刷新频道。重启需重新填写" FontSize="10" Foreground="#757575" />
+                                    </StackPanel>
+                                    <TextBox Grid.Column="1" Text="{Binding GlobalDefaultEpgUrl}" Watermark="http://example.com/epg.xml" />
+                                </Grid>
+                            </StackPanel>
+                        </Border>
+
+                        <!-- 安全与凭据加密状态 -->
+                        <Border Background="#222222" Padding="16" CornerRadius="8">
+                            <StackPanel Spacing="8">
+                                <TextBlock Text="数据保护与加密状态" FontSize="14" FontWeight="SemiBold" Foreground="#00E676" />
+                                <TextBlock Text="{Binding ProtectionStatus}" FontSize="12" Foreground="#CCCCCC" TextWrapping="Wrap" />
+                                <TextBlock Text="注：在 Windows 环境下采用 CurrentUser DPAPI 进行全库凭据保护；在 Mac 开发模式下采用会话内存保护，不向磁盘写入明文密码。" FontSize="10" Foreground="#757575" TextWrapping="Wrap" />
+                            </StackPanel>
+                        </Border>
+                    </StackPanel>
+                </ScrollViewer>
+
+                <!-- 聚合搜索视图 (SearchView) -->
+                <Grid RowDefinitions="Auto, *" IsVisible="{Binding #RootWindow.DataContext.IsSearchSection}" DataContext="{Binding SearchVm}">
+                    <Border Grid.Row="0" Background="#1E1E1E" Padding="16,10" BorderBrush="#2C2C2C" BorderThickness="0,0,0,1">
+                        <TextBox Text="{Binding SearchText}" Watermark="输入频道名称搜索 (大小写不敏感)..." FontSize="13" Padding="8,6" />
+                    </Border>
+                    <!-- 空状态引导图文 (对齐 REA 真实截图) -->
+                    <StackPanel Grid.Row="1" IsVisible="{Binding IsEmpty}" HorizontalAlignment="Center" VerticalAlignment="Center" Spacing="8">
+                        <TextBlock Text="🔍" FontSize="48" HorizontalAlignment="Center" Foreground="#555555" />
+                        <TextBlock Text="{Binding EmptyGuidanceTitle}" FontSize="15" FontWeight="Bold" HorizontalAlignment="Center" Foreground="#888888" />
+                        <TextBlock Text="{Binding EmptyGuidanceSubtitle}" FontSize="12" HorizontalAlignment="Center" Foreground="#666666" />
+                    </StackPanel>
+                    <ScrollViewer Grid.Row="1" IsVisible="{Binding !IsEmpty}" VerticalScrollBarVisibility="Auto">
+                        <ItemsControl ItemsSource="{Binding SearchResults}" Margin="16">
+                            <ItemsControl.ItemsPanel>
+                                <ItemsPanelTemplate>
+                                    <WrapPanel Orientation="Horizontal" />
+                                </ItemsPanelTemplate>
+                            </ItemsControl.ItemsPanel>
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate DataType="m:Channel">
+                                    <Border Width="185" Margin="6" Padding="10" Background="#222222" CornerRadius="8">
+                                        <StackPanel Spacing="6">
+                                            <TextBlock Text="{Binding Name}" FontSize="13" FontWeight="Bold" TextTrimming="CharacterEllipsis" />
+                                            <TextBlock Text="{Binding Group}" FontSize="10" Foreground="#888888" />
+                                            <Button Command="{Binding $parent[ItemsControl].DataContext.PlayChannelCommand}" CommandParameter="{Binding}" Content="▶ 播放" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" Background="#7C4DFF" FontSize="11" />
+                                        </StackPanel>
+                                    </Border>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                    </ScrollViewer>
+                </Grid>
+
+                <Border x:Name="EditConfigOverlay" Background="#AA000000" IsVisible="{Binding ConfigsVm.IsEditing}">
+                    <Border Width="500" MaxHeight="400" Margin="12" Background="#222222" CornerRadius="10" Padding="20" HorizontalAlignment="Center" VerticalAlignment="Center" DataContext="{Binding ConfigsVm}">
+                        <ScrollViewer VerticalScrollBarVisibility="Auto">
+                            <StackPanel Spacing="10" IsEnabled="{Binding !IsSavingChanges}">
+                                <TextBlock Text="编辑配置" FontSize="16" FontWeight="Bold" />
+                                <TextBlock Text="敏感字段不回显。请选择不修改、替换或清除；替换时填写新值。地址不可清除。" FontSize="11" TextWrapping="Wrap" />
+                                <TextBlock Text="{Binding EditError}" Foreground="#FF5252" TextWrapping="Wrap" />
+                                <StackPanel DataContext="{Binding EditForm}" Spacing="8">
+                                    <TextBlock Text="{Binding SafeLocation}" FontSize="11" />
+                                    <TextBlock Text="名称" />
+                                    <TextBox x:Name="EditConfigName" Text="{Binding Name}" />
+                                    <ItemsControl ItemsSource="{Binding Fields}">
+                                        <ItemsControl.ItemTemplate>
+                                            <DataTemplate DataType="vm:ConfigEditField">
+                                                <StackPanel Spacing="4" Margin="0,4">
+                                                    <TextBlock Text="{Binding Label}" />
+                                                    <Grid ColumnDefinitions="110, *" ColumnSpacing="8">
+                                                        <ComboBox ItemsSource="{x:Static vm:ConfigEditField.Actions}" SelectedItem="{Binding Action, Mode=TwoWay}" HorizontalAlignment="Stretch" />
+                                                        <TextBox Grid.Column="1" Text="{Binding Value}" PasswordChar="●" Watermark="仅替换时填写新值" />
+                                                    </Grid>
+                                                </StackPanel>
+                                            </DataTemplate>
+                                        </ItemsControl.ItemTemplate>
+                                    </ItemsControl>
+                                </StackPanel>
+                                <StackPanel Orientation="Horizontal" Spacing="8">
+                                    <Button x:Name="SaveEditConfigButton" Command="{Binding SaveEditCommand}" Content="保存修改" />
+                                    <Button x:Name="CancelEditConfigButton" Command="{Binding CancelEditCommand}" Content="取消" />
+                                </StackPanel>
+                            </StackPanel>
+                        </ScrollViewer>
+                    </Border>
+                </Border>
+
+                <!-- 添加配置模态弹窗 (Modal Overlay) -->
+                <Border Background="#88000000" IsVisible="{Binding ConfigsVm.IsAddDialogOpen}">
+                    <Border Width="500" Background="#222222" CornerRadius="10" Padding="20" HorizontalAlignment="Center" VerticalAlignment="Center" BorderBrush="#3C3C3C" BorderThickness="1">
+                        <ScrollViewer x:Name="AddConfigScroll" MaxHeight="300" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                        <StackPanel Spacing="12" DataContext="{Binding ConfigsVm.AddForm}">
+                            <TextBlock Text="添加配置" FontSize="16" FontWeight="Bold" Foreground="#E040FB" />
+                            <TextBlock Text="{Binding ValidationErrorMessage}" Foreground="#FF5252" FontSize="12" IsVisible="{Binding ValidationErrorMessage, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+
+                            <TextBlock Text="配置名称:" FontSize="12" Foreground="#AAAAAA" />
+                            <TextBox Text="{Binding Name}" Watermark="默认 Default" />
+
+                            <!-- M3U 专有字段 (区分网络链接与本地文件路径) -->
+                            <StackPanel Spacing="6" IsVisible="{Binding Kind, Converter={x:Static ObjectConverters.Equal}, ConverterParameter={x:Static m:SourceKind.M3u}}">
+                                <TextBlock Text="M3U 订阅链接或本地文件绝对路径 (必填):" FontSize="12" Foreground="#AAAAAA" />
+                                <TextBox Text="{Binding LocationUrl}" Watermark="https://example.com/playlist.m3u 或 C:\test.m3u" />
+                                <Button x:Name="BrowseM3uButton" Content="选择本地 M3U 文件…" Click="OnBrowseM3uClick" />
+                                <TextBlock Text="自定义 EPG 地址 (可选):" FontSize="12" Foreground="#AAAAAA" />
+                                <TextBox Text="{Binding CustomEpgUrl}" Watermark="https://example.com/epg.xml" />
+                            </StackPanel>
+
+                            <!-- Xtream 专有字段 -->
+                            <StackPanel Spacing="6" IsVisible="{Binding Kind, Converter={x:Static ObjectConverters.Equal}, ConverterParameter={x:Static m:SourceKind.Xtream}}">
+                                <TextBlock Text="Xtream 服务地址 (必填):" FontSize="12" Foreground="#AAAAAA" />
+                                <TextBox Text="{Binding ServerUrl}" Watermark="http://xtream.server:8080" />
+                                <TextBlock Text="用户名 (必填):" FontSize="12" Foreground="#AAAAAA" />
+                                <TextBox Text="{Binding Username}" Watermark="Username" />
+                                <TextBlock Text="密码 (必填):" FontSize="12" Foreground="#AAAAAA" />
+                                <TextBox Text="{Binding Password}" PasswordChar="*" Watermark="Password" />
+                            </StackPanel>
+
+                            <TextBlock Text="请求 User-Agent（可选）" FontSize="12" Foreground="#AAAAAA" />
+                            <TextBox Text="{Binding UserAgent}" Watermark="使用默认值" />
+                            <TextBlock Text="请求 Referer（可选）" FontSize="12" Foreground="#AAAAAA" />
+                            <TextBox Text="{Binding Referer}" Watermark="https://example.com/" />
+
+                            <!-- 6 个设置开关 (首版差异：全部未实装，显式禁用并说明，防止占位假功能) -->
+                            <StackPanel Spacing="4" Margin="0,4">
+                                <CheckBox Content="自动刷新配置 (差异：首版未实装)" IsChecked="False" IsEnabled="False" FontSize="12" />
+                                <CheckBox Content="关闭预览图 (差异：首版未实装)" IsChecked="False" IsEnabled="False" FontSize="12" />
+                                <CheckBox Content="自动刷新预览图 (差异：首版未实装)" IsChecked="False" IsEnabled="False" FontSize="12" />
+                                <CheckBox Content="关闭延迟检测 (差异：首版未实装)" IsChecked="False" IsEnabled="False" FontSize="12" />
+                                <CheckBox Content="关闭内置台标 (差异：首版未实装)" IsChecked="False" IsEnabled="False" FontSize="12" />
+                                <CheckBox Content="不显示分组 (差异：首版未实装)" IsChecked="False" IsEnabled="False" FontSize="12" />
+                            </StackPanel>
+
+                            <!-- 提交与取消按钮 (显式绑定 ConfigsViewModel 消除歧义) -->
+                            <Grid ColumnDefinitions="*, *" Margin="0,10,0,0">
+                                <Button Grid.Column="0" Command="{Binding #RootWindow.DataContext.ConfigsVm.SaveAddFormCommand}" Content="保存配置" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" Background="#7C4DFF" Foreground="#FFFFFF" Margin="0,0,6,0" />
+                                <Button Grid.Column="1" Command="{Binding #RootWindow.DataContext.ConfigsVm.CloseAddDialogCommand}" Content="取消" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" Background="#333333" Margin="6,0,0,0" />
+                            </Grid>
+                        </StackPanel>
+                        </ScrollViewer>
+                    </Border>
+                </Border>
+            </Panel>
+
+            <!-- 2. 原生视频渲染区域 (VideoView 宿主 - 独立于底部控制栏，确保 Windows Airspace 安全) -->
+            <Border Grid.Row="2" Height="240" Background="#0A0A0A" IsVisible="{Binding PlayerVm.IsPlaying}" BorderBrush="#2A2A2A" BorderThickness="0,1,0,0">
+                <vlc:VideoView x:Name="PlayerVideoView" HorizontalAlignment="Stretch" VerticalAlignment="Stretch" />
+            </Border>
+
+            <!-- 3. 底部停靠播放栏与控制条 (Docked Controls) -->
+            <Border Grid.Row="3" Background="#121212" BorderBrush="#2C2C2C" BorderThickness="0,1,0,0" Padding="16,8" DataContext="{Binding PlayerVm}">
+                <Grid ColumnDefinitions="Auto, *, Auto">
+                    <!-- 左侧: 播放/暂停/停止控制 -->
+                    <StackPanel Grid.Column="0" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+                        <!-- 图标由状态驱动：Content 绑 bool 会被渲染成 "True"/"False" 文字（曾显示为截断的 "Fal"）。
+                             故改用两个 TextBlock 以 IsVisible 切换。依据见
+                             docs/review/evidence/phase1-render-findings.md 的缺陷 2。 -->
+                        <Button Command="{Binding TogglePlayPauseCommand}" Width="36" Height="36" CornerRadius="18" HorizontalContentAlignment="Center" VerticalContentAlignment="Center" Background="#E040FB" Foreground="#FFFFFF">
+                            <Panel>
+                                <TextBlock Text="▶" Foreground="#FFFFFF" IsVisible="{Binding !IsPlaying}" />
+                                <TextBlock Text="⏸" Foreground="#FFFFFF" IsVisible="{Binding IsPlaying}" />
+                            </Panel>
+                        </Button>
+                        <Button Command="{Binding StopCommand}" Content="⏹" Width="36" Height="36" CornerRadius="18" HorizontalContentAlignment="Center" VerticalContentAlignment="Center" Background="#262626" />
+                    </StackPanel>
+
+                    <!-- 中间: 当前播放频道信息与错误提示 -->
+                    <StackPanel Grid.Column="1" Margin="16,0" VerticalAlignment="Center" Spacing="2">
+                        <TextBlock Text="{Binding ChannelTitle, FallbackValue='未播放频道'}" FontSize="13" FontWeight="Bold" Foreground="#FFFFFF" TextTrimming="CharacterEllipsis" />
+                        <TextBlock Text="{Binding SafeDisplayStreamUrl, FallbackValue='无流媒体地址'}" FontSize="10" Foreground="#666666" TextTrimming="CharacterEllipsis" />
+                        <TextBlock Text="{Binding ErrorMessage}" FontSize="10" Foreground="#FF5252" TextTrimming="CharacterEllipsis" IsVisible="{Binding ErrorMessage, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+                    </StackPanel>
+
+                    <!-- 右侧: 音量控制与全屏按钮 -->
+                    <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+                        <Button Command="{Binding ToggleMuteCommand}" Width="32" Height="32" Background="Transparent">
+                            <Panel>
+                                <TextBlock Text="🔊" IsVisible="{Binding !IsMuted}" />
+                                <TextBlock Text="🔇" IsVisible="{Binding IsMuted}" />
+                            </Panel>
+                        </Button>
+                        <Slider Value="{Binding Volume}" Minimum="0" Maximum="100" Width="90" VerticalAlignment="Center" />
+                        <Button Command="{Binding ToggleFullScreenCommand}" Content="⛶" Width="32" Height="32" Background="Transparent" />
+                    </StackPanel>
+                </Grid>
+            </Border>
+        </Grid>
+    </Grid>
+</Window>

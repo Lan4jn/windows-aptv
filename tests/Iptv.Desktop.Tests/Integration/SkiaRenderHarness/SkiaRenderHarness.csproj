@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType><TargetFramework>net10.0</TargetFramework>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <Nullable>enable</Nullable><ImplicitUsings>enable</ImplicitUsings>
+    <AvaloniaBuildTelemetryEnabled>false</AvaloniaBuildTelemetryEnabled>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../../../src/Iptv.Desktop/Iptv.Desktop.csproj" />
+    <PackageReference Include="Avalonia.Headless" Version="11.3.13" />
+    <Compile Include="Program.cs.txt" />
+    <Compile Include="MatrixRunner.cs.txt" />
+    <Compile Include="ContinuationRunner.cs.txt" />
+    <Compile Include="S1AcceptanceProbe.cs.txt" />
+    <Compile Include="SourceProxyRunner.cs.txt" />
+    <Compile Include="ProxyUiRunner.cs.txt" />
+    <Compile Include="LocalPlaybackRunner.cs.txt" />
+    <Compile Include="../../Fakes/FakeServices.cs" Link="FakeServices.cs" />
+  </ItemGroup>
+</Project>

@@ -1,0 +1,119 @@
+using Avalonia;
+using Avalonia.Controls;
+using Avalonia.Headless;
+using Avalonia.Threading;
+using Avalonia.VisualTree;
+using Iptv.Core.Models;
+using Iptv.Desktop;
+using Iptv.Desktop.Tests;
+using Iptv.Desktop.ViewModels;
+using SkiaSharp;
+using System.Reflection;
+
+public static class MatrixRunner
+{
+    public static int Run(string output, bool breakContent)
+    {
+        var cases = new[]
+        {
+            ("empty",850,600,1d,0), ("loading",1280,800,1d,3),
+            ("channel-error",850,600,1d,3), ("epg-error",850,600,1d,3),
+            ("unselected",1280,800,1d,3), ("selected-no-epg",1280,800,1d,3),
+            ("pressure-500",1280,800,1d,500), ("pressure-2000",1920,1080,1d,2000),
+            ("long-data",850,600,1d,3), ("minimum",850,600,1d,3),
+            ("large",1920,1080,1d,3), ("dpi2",1280,800,2d,3), ("minimum-dpi2",850,600,2d,3)
+        };
+        foreach (var item in cases)
+        {
+            var (name, width, height, scale, count) = item;
+            var longData = name == "long-data";
+            var longName = string.Concat(Enumerable.Repeat("SyntheticLongName", 30));
+            var longHost = string.Join('.', Enumerable.Repeat(new string('a', 50), 4)) + ".fixture.invalid";
+            var source = new SourceConfig("matrix", longData ? longName : "Synthetic matrix", SourceKind.M3u,
+                longData ? "https://" + longHost + "/FAKE-path?FAKE-query=FAKE" : "https://fixture.invalid/matrix.m3u",
+                customEpgUrl: name == "epg-error" ? "https://fixture.invalid/guide.xml" : null);
+            var channels = Enumerable.Range(0, count).Select(i => new Channel("ch"+i,source.Id,
+                longData ? longName + i : "Synthetic " + i,
+                longData ? "https://" + longHost + "/FAKE-path?token=FAKE" : "https://fixture.invalid/stream"+i,
+                group: longData ? longName : "Group " + (i % (count >= 500 ? count==500 ? 100 : 200 : 3)), tvgId:"ch"+i)).ToArray();
+            var playlist = new FakePlaylistService(channels);
+            var pending = new TaskCompletionSource<Iptv.Desktop.Services.PlaylistChannelsResult>();
+            if(name == "loading") playlist.LoadHandler = (_,_) => pending.Task;
+            if(name == "channel-error") playlist.LoadHandler = (_,_) => Task.FromException<Iptv.Desktop.Services.PlaylistChannelsResult>(new Exception("FAKE_FAILURE"));
+            var epg = new FakeEpgService();
+            if(name == "epg-error") epg.LoadHandler = (url,_) => url == null ? Task.CompletedTask : Task.FromException(new Exception("FAKE_EPG_FAILURE"));
+            var vm = new MainWindowViewModel(playlist,new FakeLibraryService(count==0 ? Array.Empty<SourceConfig>() : new[]{source},channels),epg,new FakePlayer());
+            var window = new MainWindow{DataContext=vm,Width=width,Height=height};
+            try
+            {
+                SetScaling(window, scale);
+                window.Show();
+                if(name=="loading")
+                {
+                    Dispatcher.UIThread.RunJobs();
+                    if(!vm.ChannelsVm.IsLoading || window.InitializationTask.IsCompleted) throw new Exception("Loading case not actually pending.");
+                }
+                else Program.Complete(window.InitializationTask);
+                if(name=="selected-no-epg") vm.ChannelsVm.SelectedChannel=channels[0];
+                window.UpdateLayout(); Dispatcher.UIThread.RunJobs();
+                var status = window.FindControl<TextBlock>("ChannelsStatus")!;
+                string? expected = name switch
+                {
+                    "empty" => null,
+                    "loading" => "正在加载频道列表...",
+                    "channel-error" => "加载失败，请检查源地址、账号或网络连接",
+                    "epg-error" => "共加载 3 个频道，节目加载失败，请稍后刷新",
+                    _ => $"共加载 {count} 个频道"
+                };
+                if(status.Text != expected) throw new Exception($"Wrong state {name}: {status.Text}");
+                if(name=="selected-no-epg" && vm.ChannelsVm.SelectedChannel==null) throw new Exception("Selection absent.");
+                if(name=="unselected" && vm.ChannelsVm.SelectedChannel!=null) throw new Exception("Unexpected selection.");
+                if(vm.ChannelsVm.AllChannels.Count != (name is "loading" or "channel-error" ? 0 : count)) throw new Exception("Channel count mismatch.");
+                if(Math.Abs(window.RenderScaling-scale)>.001) throw new Exception("Requested scaling not applied.");
+                Console.WriteLine($"CASE={name} LOGICAL={window.ClientSize} SCALE={window.RenderScaling} CHANNELS={vm.ChannelsVm.AllChannels.Count} GROUPS={vm.ChannelsVm.Groups.Count} ISLOADING={vm.ChannelsVm.IsLoading}");
+                var anchor = name == "empty" ? window.FindControl<TextBlock>("CurrentProgrammeTitle")! : status;
+                if(breakContent && name=="empty") anchor.Opacity=0;
+                Program.Capture(window,output,name,(int)(width*scale),(int)(height*scale));
+                VerifyTextPixels(window,anchor,output,name,scale);
+                var title=window.FindControl<TextBlock>("CurrentProgrammeTitle")!;
+                if(title.Text != "暂无当前节目") throw new Exception("Empty programme branch wrong.");
+                if(name is "empty" or "selected-no-epg" or "unselected") VerifyTextPixels(window,title,output,name,scale);
+            }
+            finally
+            {
+                window.Close();
+                if(name=="loading"){pending.TrySetResult(new Iptv.Desktop.Services.PlaylistChannelsResult(channels,Array.Empty<string>(),Array.Empty<string>()));Program.Complete(window.InitializationTask);}
+                Dispatcher.UIThread.RunJobs();
+            }
+        }
+        Console.WriteLine("MATRIX_ACCEPTANCE=PASS (Skia layout pixels, synthetic services)");
+        return 0;
+    }
+
+    private static void SetScaling(MainWindow window,double scaling)
+    {
+        if(scaling==1)return;
+        var property=typeof(TopLevel).GetProperty("PlatformImpl",BindingFlags.Instance|BindingFlags.Public|BindingFlags.NonPublic)!;
+        var impl=property.GetValue(window)!;
+        var field=impl.GetType().GetField("<RenderScaling>k__BackingField",BindingFlags.Instance|BindingFlags.NonPublic)
+            ?? throw new Exception("Headless scaling field unavailable.");
+        field.SetValue(impl,scaling);
+        var changed=impl.GetType().GetProperty("ScalingChanged",BindingFlags.Instance|BindingFlags.Public)!;
+        ((Action<double>?)changed.GetValue(impl))?.Invoke(scaling);
+    }
+
+    private static void VerifyTextPixels(MainWindow window,TextBlock text,string output,string name,double scale)
+    {
+        var origin=text.TranslatePoint(new Point(0,0),window) ?? throw new Exception("Text control detached.");
+        using var png=SKBitmap.Decode(Path.Combine(output,name+".png"));
+        var left=(int)Math.Floor(origin.X*scale);var top=(int)Math.Floor(origin.Y*scale);
+        var right=Math.Min(png.Width,(int)Math.Ceiling((origin.X+text.Bounds.Width)*scale));
+        var bottom=Math.Min(png.Height,(int)Math.Ceiling((origin.Y+text.Bounds.Height)*scale));
+        if(left<0||top<0||right<=left||bottom<=top)throw new Exception("Text pixel ROI outside visible frame.");
+        var histogram=new Dictionary<uint,int>();
+        for(var y=top;y<bottom;y++)for(var x=left;x<right;x++){var color=(uint)png.GetPixel(x,y);histogram[color]=histogram.GetValueOrDefault(color)+1;}
+        var samples=(right-left)*(bottom-top);var variation=samples-histogram.Values.Max();
+        Console.WriteLine($"TEXT_ROI case={name} name={text.Name} bounds={left},{top},{right-left},{bottom-top} colors={histogram.Count} changed={variation}/{samples}");
+        if(histogram.Count<4||variation<20)throw new Exception("TEXT_PIXELS_MISSING: "+text.Name);
+    }
+}

@@ -1,0 +1,61 @@
+using Avalonia;
+using Avalonia.Controls;
+using Avalonia.Threading;
+using Avalonia.VisualTree;
+using Iptv.Core.Models;
+using Iptv.Core.Security;
+using Iptv.Desktop;
+using Iptv.Desktop.Services;
+using Iptv.Desktop.Tests;
+using Iptv.Desktop.ViewModels;
+
+public static class ProxyUiRunner
+{
+ public static int Run(string output,bool negative)
+ {
+  var root=Path.Combine(output,"synthetic-library-"+Guid.NewGuid().ToString("N"));Directory.CreateDirectory(root);
+  var library=new CoreLibraryService(root,new Protector());
+  Program.Complete(library.SaveConfigAsync(new SourceConfig("s","Synthetic source",SourceKind.M3u,"http://fixture.invalid/list")));
+  var vm=new MainWindowViewModel(new FakePlaylistService(),library,new FakeEpgService(),new FakePlayer());
+  var window=new MainWindow{DataContext=vm,Width=1280,Height=800};
+  try{
+   window.Show();Program.Complete(window.InitializationTask);vm.NavigateToConfigsCommand.Execute(null);Layout(window);
+   var proxies=vm.ConfigsVm.ProxyProfilesVm;
+   var add=window.FindControl<Button>("AddProxyProfileButton")!;add.Command!.Execute(null);Layout(window);
+   window.FindControl<TextBox>("ProxyNameInput")!.Text="Synthetic proxy";
+   window.FindControl<TextBox>("ProxyEndpointInput")!.Text="http://[::1]:8080";
+   foreach(var field in new[]{proxies.Draft!.Username,proxies.Draft.Password}){field.Action="替换";field.Value="SYNTHETIC_PRIVATE";}
+   Layout(window);
+   var password=window.FindControl<TextBox>("ProxyPasswordInput")!;if(password.PasswordChar=='\0')throw new Exception("UNMASKED_PASSWORD");
+   var save=window.FindControl<Button>("SaveProxyProfileButton")!;Reveal(window,save);
+   Program.Capture(window,output,"create-masked");Execute(save);Layout(window);
+   var profile=Task.Run(()=>Fresh(root).GetUserProxiesAsync()).GetAwaiter().GetResult().Single();
+   if(profile.Password!="SYNTHETIC_PRIVATE"||profile.Username!="SYNTHETIC_PRIVATE")throw new Exception("PROTECTED_AUTH_NOT_RELOADED");
+   var item=proxies.Profiles.Single();var edit=ButtonFor(window,item,proxies.EditCommand);Execute(edit);Layout(window);
+   if(proxies.Draft!.FieldsForAcceptance().Any())throw new Exception("OLD_AUTH_ECHO");
+   if(window.FindControl<TextBox>("ProxyPasswordInput")!.Text?.Length>0||window.FindControl<TextBox>("ProxyUsernameInput")!.Text?.Length>0)throw new Exception("OLD_SECRET_INPUT");
+   window.Width=850;window.Height=600;Layout(window);save=window.FindControl<Button>("SaveProxyProfileButton")!;Reveal(window,save);
+   var label=save.GetVisualDescendants().OfType<TextBlock>().Single(t=>t.Text=="保存档案");if(negative)label.Opacity=0;
+   Program.Capture(window,output,"edit-minimum-actions",850,600);Verify(window,label,output);
+   window.FindControl<Button>("CancelProxyProfileButton")!.Command!.Execute(null);Layout(window);
+   var row=proxies.Sources.Single();var picker=window.GetVisualDescendants().OfType<ComboBox>().Single(c=>ReferenceEquals(c.DataContext,row));picker.SelectedItem=row.Choices.Single(c=>c.Id==profile.Id);Layout(window);
+   var assign=ButtonFor(window,row,proxies.AssignCommand);Reveal(window,assign);Execute(assign);Layout(window);
+   if(Task.Run(()=>Fresh(root).GetConfigsAsync()).GetAwaiter().GetResult().Single().ProxyId!=profile.Id)throw new Exception("ASSIGN_NOT_PERSISTED");
+   row=proxies.Sources.Single();assign=ButtonFor(window,row,proxies.AssignCommand);Reveal(window,assign);Program.Capture(window,output,"assigned-minimum",850,600);
+   Execute(ButtonFor(window,proxies.Profiles.Single(),proxies.DeleteCommand));if(Task.Run(()=>Fresh(root).GetUserProxiesAsync()).GetAwaiter().GetResult().Count!=1||!proxies.Message!.Contains("引用"))throw new Exception("REFERENCED_DELETE");
+   row=proxies.Sources.Single();picker=window.GetVisualDescendants().OfType<ComboBox>().Single(c=>ReferenceEquals(c.DataContext,row));picker.SelectedItem=row.Choices.Single(c=>c.Id==null);Execute(ButtonFor(window,row,proxies.AssignCommand));Layout(window);
+   Execute(ButtonFor(window,proxies.Profiles.Single(),proxies.DeleteCommand));Layout(window);
+   if(Task.Run(()=>Fresh(root).GetUserProxiesAsync()).GetAwaiter().GetResult().Count!=0||Task.Run(()=>Fresh(root).GetConfigsAsync()).GetAwaiter().GetResult().Single().ProxyId!=null)throw new Exception("DELETE_SYSTEM_NOT_PERSISTED");
+   window.Width=1280;window.Height=800;Layout(window);Reveal(window,window.FindControl<Button>("AddProxyProfileButton")!);Program.Capture(window,output,"deleted-system");
+   Console.WriteLine("ACTUAL_PROXY_CRUD_ASSIGN_SYSTEM=True; PROTECTED_FRESH_AUTH=True; MASK_NO_OLD_VALUE=True; REFERENCED_DELETE_BLOCKED=True; NATIVE_PROXY_NOT_SUPPORTED=True");return 0;
+  }finally{window.Close();Dispatcher.UIThread.RunJobs();}
+ }
+ private static IEnumerable<string> FieldsForAcceptance(this ProxyProfileDraft d)=>new[]{d.Endpoint.Value,d.Username.Value,d.Password.Value}.Where(v=>v.Length>0);
+ private static CoreLibraryService Fresh(string root)=>new(root,new Protector());
+ private static void Layout(MainWindow w){w.UpdateLayout();Dispatcher.UIThread.RunJobs();}
+ private static void Execute(Button b){if(b.Command is AsyncRelayCommand command)Program.Complete(command.ExecuteAsync(b.CommandParameter));else b.Command!.Execute(b.CommandParameter);}
+ private static Button ButtonFor(MainWindow w,object context,object command)=>w.GetVisualDescendants().OfType<Button>().Single(b=>ReferenceEquals(b.DataContext,context)&&ReferenceEquals(b.Command,command));
+ private static void Reveal(MainWindow w,Control control){control.BringIntoView();Layout(w);var p=control.TranslatePoint(default,w)!.Value;if(p.Y<0||p.Y+control.Bounds.Height>w.ClientSize.Height)throw new Exception("CONTROL_NOT_REACHABLE");}
+ private static void Verify(MainWindow w,TextBlock text,string output){var p=text.TranslatePoint(default,w)!.Value;using var png=SkiaSharp.SKBitmap.Decode(Path.Combine(output,"edit-minimum-actions.png"));var colors=new Dictionary<uint,int>();for(int y=(int)p.Y;y<(int)(p.Y+text.Bounds.Height);y++)for(int x=(int)p.X;x<(int)(p.X+text.Bounds.Width);x++){uint c=(uint)png.GetPixel(x,y);colors[c]=colors.GetValueOrDefault(c)+1;}var variation=colors.Values.Sum()-colors.Values.Max();Console.WriteLine($"PROXY_SAVE_ROI colors={colors.Count} changed={variation}");if(colors.Count<4||variation<20)throw new Exception("PROXY_SAVE_LABEL_MISSING");}
+ private sealed class Protector:ILibraryStateProtector{public byte[] Protect(byte[] b)=>b.Select(v=>(byte)(v^0x6A)).ToArray();public byte[] Unprotect(byte[] b)=>Protect(b);}
+}

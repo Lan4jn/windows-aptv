@@ -1,0 +1,97 @@
+using System.Text;
+using System.Security.Cryptography;
+using Avalonia;
+using Avalonia.Controls;
+using Avalonia.Threading;
+using Avalonia.VisualTree;
+using Iptv.Core.Models;
+using Iptv.Core.Library;
+using Iptv.Core.Security;
+using Iptv.Desktop;
+using Iptv.Desktop.Services;
+using Iptv.Desktop.Tests;
+using Iptv.Desktop.ViewModels;
+
+public static class SourceProxyRunner
+{
+    public static int Run(string output, bool breakContent)
+    {
+        var root=Path.Combine(output,"synthetic-store-"+Guid.NewGuid().ToString("N"));Directory.CreateDirectory(root);
+        var protector=new ToggleProtector();var credentials=new DiskCredentials(root);
+        Program.Complete(new LibraryStateStore(root,protector).SaveAsync(new LibraryState{UserProxies=new[]{new UserProxy("proxy-preserved","Synthetic proxy",ProxyKind.Http,"http://proxy.fixture.invalid:8080")}}));
+        var service=new CoreLibraryService(root,protector,credentials);
+        var first=new SourceConfig("a","Synthetic A",SourceKind.Xtream,"https://fixture.invalid",username:"SYNTHETIC_USER",password:"SYNTHETIC_OLD_SECRET",order:0,proxyId:"proxy-preserved");
+        var second=new SourceConfig("b","Synthetic B",SourceKind.M3u,"https://fixture.invalid/b",order:1);
+        Program.Complete(service.SaveConfigAsync(first));Program.Complete(service.SaveConfigAsync(second));
+        var before=protector.Writes;Program.Complete(service.SaveSourceOrderAsync(new[]{"b","a"}));
+        if(protector.Writes!=before+1)throw new Exception("ORDER_NOT_SINGLE_PERSIST");
+        foreach(var bad in new[]{new[]{"a","a"},new[]{"a"},new[]{"a","b","foreign"}})
+        {
+            before=protector.Writes;try{Program.Complete(service.SaveSourceOrderAsync(bad));throw new Exception("BAD_ORDER_ACCEPTED");}catch(ArgumentException){}
+            if(protector.Writes!=before)throw new Exception("BAD_ORDER_WROTE");
+        }
+        protector.FailNext=true;
+        try{Program.Complete(service.SaveConfigAsync(first with{Name="Should not persist",Password="SYNTHETIC_REJECTED_SECRET"}));throw new Exception("SAVE_FAILURE_NOT_TRIGGERED");}catch(CryptographicException){}
+        var freshCredentials=new DiskCredentials(root);var fresh=new CoreLibraryService(root,new ToggleProtector(),freshCredentials);
+        var reloaded=Fresh(fresh);
+        if(reloaded.Select(s=>s.Id).SequenceEqual(new[]{"b","a"})==false||reloaded.Single(s=>s.Id=="a").Password!=first.Password||reloaded.Single(s=>s.Id=="a").ProxyId!=first.ProxyId||freshCredentials.GetPasswordAsync("a").GetAwaiter().GetResult()!=first.Password)throw new Exception("FRESH_RELOAD_COMPENSATION_FAILED");
+        Console.WriteLine("ATOMIC_ORDER_SINGLE_WRITE=True; INVALID_ORDERS_NO_WRITE=True; FAILED_SAVE_CREDENTIAL_COMPENSATION_FRESH_RELOAD=True");
+        var vm=new MainWindowViewModel(new FakePlaylistService(),fresh,new FakeEpgService(),new FakePlayer());
+        var window=new MainWindow{DataContext=vm,Width=1280,Height=800};
+        try
+        {
+            window.Show();Program.Complete(window.InitializationTask);vm.NavigateToConfigsCommand.Execute(null);window.UpdateLayout();Dispatcher.UIThread.RunJobs();
+            Program.Capture(window,output,"configs-before");
+            var item=vm.ConfigsVm.Configs.Single(x=>x.Id=="a");
+            var edit=ItemButton(window,item,vm.ConfigsVm.OpenEditCommand);edit.Command!.Execute(edit.CommandParameter);window.UpdateLayout();Dispatcher.UIThread.RunJobs();
+            if(vm.ConfigsVm.EditForm==null||vm.ConfigsVm.EditForm.Fields.Any(f=>f.Value.Length!=0))throw new Exception("EDITOR_ECHOES_OLD_VALUES");
+            var overlay=window.FindControl<Border>("EditConfigOverlay")!;
+            if(overlay.GetVisualDescendants().OfType<TextBlock>().Any(t=>t.Text?.Contains("SYNTHETIC_")==true)||overlay.GetVisualDescendants().OfType<TextBox>().Any(t=>t.Text?.Contains("SYNTHETIC_")==true))throw new Exception("VISIBLE_OLD_SECRET");
+            Program.Capture(window,output,"edit-top");
+            window.Width=850;window.Height=600;window.UpdateLayout();Dispatcher.UIThread.RunJobs();
+            var scroll=overlay.GetVisualDescendants().OfType<ScrollViewer>().First(s=>s.Content is StackPanel);scroll.Offset=new Vector(0,scroll.Extent.Height);window.UpdateLayout();Dispatcher.UIThread.RunJobs();
+            var save=window.FindControl<Button>("SaveEditConfigButton")!;var cancel=window.FindControl<Button>("CancelEditConfigButton")!;
+            var saveOrigin=save.TranslatePoint(default,window)!.Value;if(saveOrigin.Y<0||saveOrigin.Y+save.Bounds.Height>window.ClientSize.Height)throw new Exception("SAVE_UNREACHABLE_AFTER_SCROLL");
+            var saveText=save.GetVisualDescendants().OfType<TextBlock>().Single(t=>t.Text=="保存修改");
+            if(breakContent)saveText.Opacity=0;
+            Program.Capture(window,output,"edit-bottom-actions",850,600);
+            VerifySavePixels(window,saveText,output);
+
+            vm.ConfigsVm.EditForm.Name="Cancelled synthetic";cancel.Command!.Execute(cancel.CommandParameter);
+            if(vm.ConfigsVm.IsEditing||Fresh(new CoreLibraryService(root,new ToggleProtector(),new DiskCredentials(root))).Single(s=>s.Id=="a").Name!="Synthetic A")throw new Exception("CANCEL_PERSISTED");
+            item=vm.ConfigsVm.Configs.Single(x=>x.Id=="a");edit=ItemButton(window,item,vm.ConfigsVm.OpenEditCommand);edit.Command!.Execute(edit.CommandParameter);window.UpdateLayout();
+            var nameBox=overlay.GetVisualDescendants().OfType<TextBox>().Single(t=>ReferenceEquals(t.DataContext,vm.ConfigsVm.EditForm)&&t.Text=="Synthetic A");nameBox.Text="Synthetic Edited";
+            if(vm.ConfigsVm.EditForm!.Name!="Synthetic Edited")throw new Exception("NAME_TEXTBOX_NOT_TWOWAY");
+            save=window.FindControl<Button>("SaveEditConfigButton")!;Program.Complete(((AsyncRelayCommand)save.Command!).ExecuteAsync(save.CommandParameter));window.UpdateLayout();Dispatcher.UIThread.RunJobs();
+            if(vm.ConfigsVm.IsEditing)throw new Exception("SAVE_DID_NOT_CLOSE");
+            item=vm.ConfigsVm.Configs.Single(x=>x.Id=="a");var up=ItemButton(window,item,vm.ConfigsVm.MoveUpCommand);Program.Complete(((AsyncRelayCommand)up.Command!).ExecuteAsync(up.CommandParameter));window.UpdateLayout();Dispatcher.UIThread.RunJobs();
+            var last=Fresh(new CoreLibraryService(root,new ToggleProtector(),new DiskCredentials(root)));
+            if(last[0].Id!="a"||last[0].Name!="Synthetic Edited"||last[0].Password!=first.Password||last[0].ProxyId!=first.ProxyId||last[0].Order!=0||last[1].Order!=1)throw new Exception("EDIT_MOVE_FRESH_RELOAD_FAILED");
+            window.Width=1280;window.Height=800;window.UpdateLayout();Dispatcher.UIThread.RunJobs();
+            Program.Capture(window,output,"configs-edited-reordered");Console.WriteLine("ACTUAL_EDIT_CANCEL_SAVE_MOVE_COMMANDS=True; MASKED_FIELDS_BLANK=True; SCROLL_SAVE_REACHABLE=True; FINAL_FRESH_AUTH_ORDER_PROXY=True");
+        }
+        finally{window.Close();Dispatcher.UIThread.RunJobs();}
+        Console.WriteLine("SOURCE_PROXY_UI_ACCEPTANCE=PASS (Core transport separate; no Desktop proxy routing)");return 0;
+    }
+    private static void VerifySavePixels(MainWindow window,TextBlock text,string output)
+    {
+        var origin=text.TranslatePoint(default,window)!.Value;using var png=SkiaSharp.SKBitmap.Decode(Path.Combine(output,"edit-bottom-actions.png"));var histogram=new Dictionary<uint,int>();var count=0;
+        for(var y=(int)origin.Y;y<Math.Min(png.Height,(int)Math.Ceiling(origin.Y+text.Bounds.Height));y++)for(var x=(int)origin.X;x<Math.Min(png.Width,(int)Math.Ceiling(origin.X+text.Bounds.Width));x++){var c=(uint)png.GetPixel(x,y);histogram[c]=histogram.GetValueOrDefault(c)+1;count++;}
+        var variation=count-histogram.Values.Max();Console.WriteLine($"SAVE_LABEL_ROI colors={histogram.Count} changed={variation}/{count}");if(histogram.Count<4||variation<20)throw new Exception("SAVE_LABEL_PIXELS_MISSING");
+    }
+    private static SourceConfig[] Fresh(CoreLibraryService service)=>Task.Run(async()=> (await service.GetConfigsAsync()).ToArray()).GetAwaiter().GetResult();
+    private static Button ItemButton(MainWindow window,SourceConfigItemViewModel item,object command)=>window.GetVisualDescendants().OfType<Button>().Single(b=>ReferenceEquals(b.DataContext,item)&&ReferenceEquals(b.Command,command));
+    private sealed class ToggleProtector:ILibraryStateProtector
+    {
+        public int Writes;public bool FailNext;
+        public byte[] Protect(byte[] bytes){if(FailNext){FailNext=false;throw new CryptographicException("Synthetic persistence fault");}Writes++;return bytes.Select(x=>(byte)(x^0xB6)).ToArray();}
+        public byte[] Unprotect(byte[] bytes)=>bytes.Select(x=>(byte)(x^0xB6)).ToArray();
+    }
+    private sealed class DiskCredentials(string root):ICredentialStorage
+    {
+        private string FilePath(string id)=>Path.Combine(root,"synthetic-sidecar-"+id);
+        public Task SavePasswordAsync(string id,string password,CancellationToken ct=default)=>File.WriteAllBytesAsync(FilePath(id),Encoding.UTF8.GetBytes(password).Select(x=>(byte)(x^0xB7)).ToArray(),ct);
+        public async Task<string?> GetPasswordAsync(string id,CancellationToken ct=default)=>File.Exists(FilePath(id))?Encoding.UTF8.GetString((await File.ReadAllBytesAsync(FilePath(id),ct).ConfigureAwait(false)).Select(x=>(byte)(x^0xB7)).ToArray()):null;
+        public Task DeletePasswordAsync(string id,CancellationToken ct=default){var path=Path.GetFullPath(FilePath(id));if(Path.GetDirectoryName(path)!=Path.GetFullPath(root))throw new Exception("Synthetic sidecar path mismatch");if(File.Exists(path))File.Delete(path);return Task.CompletedTask;}
+    }
+}

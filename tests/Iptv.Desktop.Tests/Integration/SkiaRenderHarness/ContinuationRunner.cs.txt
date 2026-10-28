@@ -1,0 +1,85 @@
+using Avalonia;
+using Avalonia.Controls;
+using Avalonia.Headless;
+using Avalonia.Threading;
+using Avalonia.VisualTree;
+using Iptv.Core.Models;
+using Iptv.Desktop;
+using Iptv.Desktop.Tests;
+using Iptv.Desktop.ViewModels;
+using SkiaSharp;
+using System.Reflection;
+
+public static class ContinuationRunner
+{
+    public static int Run(string output, bool breakContent)
+    {
+        foreach(var spec in new[]{("minimum",850,600,1d),("standard",1280,800,1d),("minimum-dpi2",850,600,2d)})
+        {
+            var (name,width,height,scale)=spec;
+            var group=string.Concat(Enumerable.Repeat("Synthetic long group ",15));
+            var source=new SourceConfig("source","Synthetic source",SourceKind.M3u,"https://fixture.invalid/list");
+            var channel=new Channel("one",source.Id,"Synthetic channel","https://fixture.invalid/live/FAKE/FAKE/1.ts",group:group);
+            var vm=new MainWindowViewModel(new FakePlaylistService(new[]{channel}),new FakeLibraryService(new[]{source}),new FakeEpgService(),new FakePlayer());
+            var window=Create(vm,width,height,scale);
+            try
+            {
+                Program.Complete(window.InitializationTask);window.UpdateLayout();Dispatcher.UIThread.RunJobs();
+                var sourcePicker=window.FindControl<ComboBox>("SourcePicker")!;
+                var filter=window.GetVisualDescendants().OfType<TextBox>().Single(c=>ReferenceEquals(c.DataContext,vm.ChannelsVm)&&c.Watermark?.StartsWith("过滤当前频道")==true);
+                var refresh=window.GetVisualDescendants().OfType<Button>().Single(c=>ReferenceEquals(c.Command,vm.ChannelsVm.RefreshCommand));
+                var groups=window.GetVisualDescendants().OfType<ComboBox>().Single(c=>ReferenceEquals(c.DataContext,vm.ChannelsVm)&&!ReferenceEquals(c,sourcePicker));
+                var controls=new Control[]{sourcePicker,filter,refresh,groups};
+                var bounds=controls.Select(c=>new Rect(c.TranslatePoint(default,window)!.Value,c.Bounds.Size)).ToArray();
+                for(var i=0;i<bounds.Length;i++)
+                {
+                    var r=bounds[i];Console.WriteLine($"BOUNDS case={name} control={controls[i].GetType().Name}/{controls[i].Name} rect={r} client={window.ClientSize} scale={window.RenderScaling}");
+                    if(r.Width<40||r.Height<15||r.X<240||r.Y<0||r.Right>window.ClientSize.Width+.5||r.Bottom>window.ClientSize.Height)throw new Exception("TOOLBAR_OUTSIDE_CLIENT");
+                    for(var j=0;j<i;j++)if(r.Intersects(bounds[j]))throw new Exception("TOOLBAR_OVERLAP");
+                }
+                var badge=window.GetVisualDescendants().OfType<TextBlock>().Single(t=>ReferenceEquals(t.DataContext,channel)&&t.Text==group);
+                if(badge.TextTrimming!=Avalonia.Media.TextTrimming.CharacterEllipsis||!Equals(ToolTip.GetTip(badge),group)||badge.Bounds.Width>145)throw new Exception("LONG_GROUP_NOT_BOUNDED");
+                if(window.FindControl<Border>("NoSourcesGuidance")!.IsVisible)throw new Exception("FALSE_EMPTY_SOURCE");
+                Program.Capture(window,output,name,(int)(width*scale),(int)(height*scale));
+            }
+            finally{window.Close();Dispatcher.UIThread.RunJobs();}
+        }
+        foreach(var spec in new[]{("empty-minimum",850,600,1d),("empty-standard",1280,800,1d),("empty-dpi2",850,600,2d)})
+        {
+            var(name,width,height,scale)=spec;
+            var vm=new MainWindowViewModel(new FakePlaylistService(),new FakeLibraryService(),new FakeEpgService(),new FakePlayer());
+            var window=Create(vm,width,height,scale);
+            try
+            {
+                Program.Complete(window.InitializationTask);window.UpdateLayout();Dispatcher.UIThread.RunJobs();
+                var guidance=window.FindControl<Border>("NoSourcesGuidance")!;
+                var button=window.FindControl<Button>("AddFirstSourceButton")!;
+                var title=guidance.GetVisualDescendants().OfType<TextBlock>().Single(t=>t.Text=="尚未添加频道源");
+                if(!guidance.IsEffectivelyVisible||!button.IsEffectivelyVisible||!button.Command!.CanExecute(null))throw new Exception("EMPTY_ACTION_NOT_VISIBLE");
+                if(breakContent)title.Opacity=0;
+                Program.Capture(window,output,name,(int)(width*scale),(int)(height*scale));
+                VerifyText(window,title,output,name,scale);
+                button.Command.Execute(null);Dispatcher.UIThread.RunJobs();window.UpdateLayout();
+                if(vm.CurrentSection!=NavigationSection.Configs||!vm.ConfigsVm.IsAddDialogOpen||vm.ConfigsVm.AddForm.Kind!=SourceKind.M3u)throw new Exception("EMPTY_ACTION_DID_NOT_OPEN_M3U");
+                Console.WriteLine($"EMPTY_ACTION case={name} section={vm.CurrentSection} dialog={vm.ConfigsVm.IsAddDialogOpen} kind={vm.ConfigsVm.AddForm.Kind}");
+                Program.Capture(window,output,name+"-m3u-action",(int)(width*scale),(int)(height*scale));
+            }
+            finally{window.Close();Dispatcher.UIThread.RunJobs();}
+        }
+        Console.WriteLine("CONTINUATION_PIXEL_ACCEPTANCE=PASS");return 0;
+    }
+    private static MainWindow Create(MainWindowViewModel vm,int width,int height,double scale)
+    {
+        var window=new MainWindow{DataContext=vm,Width=width,Height=height};
+        if(scale!=1){var impl=typeof(TopLevel).GetProperty("PlatformImpl",BindingFlags.Instance|BindingFlags.Public|BindingFlags.NonPublic)!.GetValue(window)!;impl.GetType().GetField("<RenderScaling>k__BackingField",BindingFlags.Instance|BindingFlags.NonPublic)!.SetValue(impl,scale);((Action<double>?)impl.GetType().GetProperty("ScalingChanged")!.GetValue(impl))?.Invoke(scale);}
+        window.Show();if(window.RenderScaling!=scale)throw new Exception("SCALING_NOT_APPLIED");return window;
+    }
+    private static void VerifyText(MainWindow window,TextBlock text,string output,string name,double scale)
+    {
+        var origin=text.TranslatePoint(default,window)!.Value;using var png=SKBitmap.Decode(Path.Combine(output,name+".png"));
+        var histogram=new Dictionary<uint,int>();var count=0;
+        for(var y=(int)(origin.Y*scale);y<Math.Min(png.Height,(int)Math.Ceiling((origin.Y+text.Bounds.Height)*scale));y++)for(var x=(int)(origin.X*scale);x<Math.Min(png.Width,(int)Math.Ceiling((origin.X+text.Bounds.Width)*scale));x++){var c=(uint)png.GetPixel(x,y);histogram[c]=histogram.GetValueOrDefault(c)+1;count++;}
+        var variation=count-histogram.Values.Max();Console.WriteLine($"EMPTY_GUIDANCE_ROI case={name} colors={histogram.Count} changed={variation}/{count}");
+        if(histogram.Count<4||variation<20)throw new Exception("EMPTY_GUIDANCE_PIXELS_MISSING");
+    }
+}
