@@ -1,3 +1,4 @@
+using System.ComponentModel;
 using System.Net;
 using System.Net.Security;
 using System.Net.Sockets;
@@ -7,18 +8,26 @@ using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using Iptv.Core.Models;
 using Iptv.Core.Networking;
+using Xunit.Abstractions;
 
 namespace Iptv.Core.Tests.Networking;
 
 public sealed class ProxyTlsTests
 {
+    private readonly ITestOutputHelper? _output;
+
+    public ProxyTlsTests(ITestOutputHelper? output = null)
+    {
+        _output = output;
+    }
+
     [Theory]
     [InlineData(ProxyKind.Http)]
     [InlineData(ProxyKind.Socks5)]
     public async Task TrustedRootAndMatchingSanReachTlsOriginThroughAuthenticatedProxy(ProxyKind kind)
     {
         using var certificates = new Certificates("origin.invalid");
-        await using var fixture = new TunnelFixture(kind, certificates.Leaf);
+        await using var fixture = new TunnelFixture(kind, certificates.Leaf, _output);
         using var lease = ProxyHttpClientFactory.Create(Policy(kind, fixture.Port), certificates.TrustPolicy());
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
         var body = await lease.Client.GetStringAsync("https://origin.invalid:18473/synthetic", timeout.Token);
@@ -37,7 +46,7 @@ public sealed class ProxyTlsTests
     {
         using var certificates = new Certificates(failure == "name" ? "wrong.invalid" : "origin.invalid");
         using var unrelated = new Certificates("origin.invalid");
-        await using var fixture = new TunnelFixture(kind, certificates.Leaf);
+        await using var fixture = new TunnelFixture(kind, certificates.Leaf, _output);
         var trust = failure == "trust" ? unrelated.TrustPolicy() : certificates.TrustPolicy();
         using var lease = ProxyHttpClientFactory.Create(Policy(kind, fixture.Port), trust);
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
@@ -55,7 +64,7 @@ public sealed class ProxyTlsTests
     public async Task PublicFactoryDoesNotTrustPrivateFixtureRoot(ProxyKind kind)
     {
         using var certificates = new Certificates("origin.invalid");
-        await using var fixture = new TunnelFixture(kind, certificates.Leaf);
+        await using var fixture = new TunnelFixture(kind, certificates.Leaf, _output);
         using var lease = ProxyHttpClientFactory.Create(Policy(kind, fixture.Port));
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
         var error = await Assert.ThrowsAsync<HttpRequestException>(() => lease.Client.GetStringAsync("https://origin.invalid:18473/synthetic", timeout.Token));
@@ -112,6 +121,9 @@ public sealed class ProxyTlsTests
     {
         private readonly Listener _origin;
         private readonly Listener _proxy;
+        private readonly ITestOutputHelper? _output;
+        private readonly List<string> _serverDiagnostics = new();
+        private readonly object _diagnosticLock = new();
         private int _tunnels;
         private int _tlsRequests;
         private int _tlsConnections;
@@ -121,21 +133,31 @@ public sealed class ProxyTlsTests
         public int TlsRequests => Volatile.Read(ref _tlsRequests);
         public int TlsConnections => Volatile.Read(ref _tlsConnections);
         public bool Authenticated => Volatile.Read(ref _authenticated) != 0;
+        public IReadOnlyList<string> ServerDiagnostics { get { lock (_diagnosticLock) return _serverDiagnostics.ToArray(); } }
 
-        public TunnelFixture(ProxyKind kind, X509Certificate2 certificate)
+        public TunnelFixture(ProxyKind kind, X509Certificate2 certificate, ITestOutputHelper? output = null)
         {
+            _output = output;
             _origin = new Listener(async (stream, ct) =>
             {
                 Interlocked.Increment(ref _tlsConnections);
-                using var tls = new SslStream(stream, leaveInnerStreamOpen: true);
-                await tls.AuthenticateAsServerAsync(new SslServerAuthenticationOptions
+                try
                 {
-                    ServerCertificate = certificate,
-                    EnabledSslProtocols = SslProtocols.Tls12 | SslProtocols.Tls13
-                }, ct);
-                await ReadHeaders(tls, ct);
-                Interlocked.Increment(ref _tlsRequests);
-                await Write(tls, "HTTP/1.1 200 OK\r\nContent-Length: 11\r\nConnection: close\r\n\r\ntls-fixture", ct);
+                    using var tls = new SslStream(stream, leaveInnerStreamOpen: true);
+                    await tls.AuthenticateAsServerAsync(new SslServerAuthenticationOptions
+                    {
+                        ServerCertificate = certificate,
+                        EnabledSslProtocols = SslProtocols.Tls12 | SslProtocols.Tls13
+                    }, ct);
+                    await ReadHeaders(tls, ct);
+                    Interlocked.Increment(ref _tlsRequests);
+                    await Write(tls, "HTTP/1.1 200 OK\r\nContent-Length: 11\r\nConnection: close\r\n\r\ntls-fixture", ct);
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    RecordServerException(ex);
+                    throw;
+                }
             });
             _proxy = new Listener(async (stream, ct) =>
             {
@@ -188,7 +210,42 @@ public sealed class ProxyTlsTests
             });
         }
 
-        public async ValueTask DisposeAsync() { await _proxy.DisposeAsync(); await _origin.DisposeAsync(); }
+        private void RecordServerException(Exception ex)
+        {
+            var sb = new StringBuilder();
+            sb.Append($"Server TLS exception: {ex.GetType().FullName}: {ex.Message} (HResult: 0x{ex.HResult:X8})");
+            if (ex.InnerException != null)
+            {
+                sb.Append($" ---> {ex.InnerException.GetType().FullName}: {ex.InnerException.Message} (HResult: 0x{ex.InnerException.HResult:X8})");
+                if (ex.InnerException is Win32Exception win32)
+                {
+                    sb.Append($" [NativeErrorCode: 0x{win32.NativeErrorCode:X8}]");
+                }
+            }
+            var line = sb.ToString();
+            lock (_diagnosticLock)
+            {
+                _serverDiagnostics.Add(line);
+            }
+            _output?.WriteLine($"[ProxyTls Server Diagnostic] {line}");
+        }
+
+        public async ValueTask DisposeAsync()
+        {
+            await _proxy.DisposeAsync();
+            await _origin.DisposeAsync();
+            lock (_diagnosticLock)
+            {
+                if (_serverDiagnostics.Count > 0)
+                {
+                    _output?.WriteLine($"[ProxyTls Fixture Summary] Server recorded {_serverDiagnostics.Count} exception(s):");
+                    foreach (var diag in _serverDiagnostics)
+                    {
+                        _output?.WriteLine($"  {diag}");
+                    }
+                }
+            }
+        }
     }
 
     private sealed class Listener : IAsyncDisposable
@@ -228,6 +285,7 @@ public sealed class ProxyTlsTests
                 catch (OperationCanceledException) when (_stop.IsCancellationRequested) { }
                 catch (IOException) { }
                 catch (AuthenticationException) { }
+                catch (CryptographicException) { }
             }
         }
 
