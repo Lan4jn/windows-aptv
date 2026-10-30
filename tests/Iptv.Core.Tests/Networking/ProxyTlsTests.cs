@@ -103,7 +103,23 @@ public sealed class ProxyTlsTests
             leafRequest.CertificateExtensions.Add(san.Build());
             leafRequest.CertificateExtensions.Add(new X509EnhancedKeyUsageExtension(new OidCollection { new("1.3.6.1.5.5.7.3.1") }, true));
             using var issued = leafRequest.Create(Root, now.AddMinutes(-2), now.AddDays(1), RandomNumberGenerator.GetBytes(16));
-            Leaf = issued.CopyWithPrivateKey(_leafKey);
+            if (OperatingSystem.IsWindows())
+            {
+                using var withKey = issued.CopyWithPrivateKey(_leafKey);
+                var pfx = withKey.Export(X509ContentType.Pfx);
+                try
+                {
+                    Leaf = X509CertificateLoader.LoadPkcs12(pfx, null, X509KeyStorageFlags.Exportable);
+                }
+                finally
+                {
+                    CryptographicOperations.ZeroMemory(pfx);
+                }
+            }
+            else
+            {
+                Leaf = issued.CopyWithPrivateKey(_leafKey);
+            }
         }
 
         public X509ChainPolicy TrustPolicy()
